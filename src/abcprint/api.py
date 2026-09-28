@@ -1,7 +1,7 @@
 """HTTP surface over the library.
 
 One library, two access modes. Every endpoint is a thin shell over a function in
-abcdoc.* that is equally callable in-process, so the CLI added later is a third
+abcprint.* that is equally callable in-process, so the CLI added later is a third
 shell over the same code rather than a reimplementation.
 
 Docs are served at /redoc (reference) and /docs (try-it-out). Both are vendored
@@ -23,8 +23,8 @@ from . import equivalence, fonts, toolchain
 from .models import Equivalence, FontHealth, Health, Toolchain as ToolchainModel
 
 REQUIRED_FONTS = ["Calibri", "Cambria", "Georgia", "Times New Roman", "Arial", "Helvetica Neue"]
-FONT_PATHS = [p for p in os.environ.get("ABCDOC_FONT_PATHS", "").split(os.pathsep) if p]
-VENDOR_DIR = os.environ.get("ABCDOC_VENDOR", "/srv/vendor")
+FONT_PATHS = [p for p in os.environ.get("ABCPRINT_FONT_PATHS", "").split(os.pathsep) if p]
+VENDOR_DIR = os.environ.get("ABCPRINT_VENDOR", "/srv/vendor")
 
 DESCRIPTION = """
 Document compilation and compliance verification for thesis-style documents.
@@ -69,7 +69,7 @@ TAGS = [
 ]
 
 app = FastAPI(
-    title="abc-doc-svc",
+    title="abc-print-svc",
     version="0.1.0",
     description=DESCRIPTION,
     openapi_tags=TAGS,
@@ -94,7 +94,7 @@ def redoc():
     local = os.path.join(VENDOR_DIR, "redoc.standalone.js")
     src = "/vendor/redoc.standalone.js" if os.path.exists(local) else \
         "https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"
-    return _doc_page("abc-doc-svc — API reference", src,
+    return _doc_page("abc-print-svc — API reference", src,
                      '<redoc spec-url="/openapi.json"></redoc>')
 
 
@@ -108,7 +108,7 @@ def docs():
         js = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"
         css = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css"
     return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8">
-<title>abc-doc-svc — try it out</title><link rel="stylesheet" href="{css}">
+<title>abc-print-svc — try it out</title><link rel="stylesheet" href="{css}">
 <meta name="viewport" content="width=device-width,initial-scale=1"></head><body>
 <div id="ui"></div><script src="{js}"></script>
 <script>SwaggerUIBundle({{url:'/openapi.json',dom_id:'#ui'}});</script></body></html>""")
@@ -116,7 +116,7 @@ def docs():
 
 @app.get("/", include_in_schema=False)
 def index():
-    return {"service": "abc-doc-svc", "version": "0.1.0",
+    return {"service": "abc-print-svc", "version": "0.1.0",
             "reference": "/redoc", "try_it_out": "/docs", "schema": "/openapi.json"}
 
 
@@ -176,7 +176,7 @@ async def post_equivalence(
 
     Byte comparison is deliberately not offered — see the service description.
     """
-    tmp = tempfile.mkdtemp(prefix="abcdoc-eq-")
+    tmp = tempfile.mkdtemp(prefix="abcprint-eq-")
     try:
         paths = []
         for slot, up in (("a", a), ("b", b)):

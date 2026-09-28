@@ -1,5 +1,5 @@
 [project]
-name = "abcdoc"
+name = "abcprint"
 version = "0.1.0"
 description = "Document compilation and compliance verification for thesis-style documents"
 requires-python = ">=3.11"

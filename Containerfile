@@ -1,4 +1,4 @@
-# abc-doc-svc — a self-contained document compilation and verification image.
+# abc-print-svc — a self-contained document compilation and verification image.
 #
 # Everything the render path needs is baked in: quarto (which brings the typst
 # that actually renders), pandoc, qpdf, poppler, python with a pypdf new enough
@@ -112,18 +112,18 @@ COPY profiles/ /srv/profiles/
 # Pipeline scripts, vendored into the build context by docker/vendor-pipeline.sh.
 COPY pipeline/ /srv/pipeline/
 ENV PYTHONPATH=/srv/src \
-    ABCDOC_VENDOR=/srv/vendor \
-    ABCDOC_FONT_PATHS=/usr/local/share/fonts/licensed:/usr/local/share/fonts/ofl \
-    ABCDOC_PIPELINE=/srv/pipeline
+    ABCPRINT_VENDOR=/srv/vendor \
+    ABCPRINT_FONT_PATHS=/usr/local/share/fonts/licensed:/usr/local/share/fonts/ofl \
+    ABCPRINT_PIPELINE=/srv/pipeline
 
 # Render unprivileged: arbitrary markdown is arbitrary input, and the service
 # must not be a foothold. Network egress, read-only root and resource caps are
 # applied at run time by the orchestrator, not here.
-RUN useradd -m -u 10001 abcdoc && mkdir -p /srv/work && chown -R abcdoc /srv/work
-USER abcdoc
+RUN useradd -m -u 10001 abcprint && mkdir -p /srv/work && chown -R abcprint /srv/work
+USER abcprint
 
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=15s --start-period=20s --retries=3 \
   CMD python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=10).status==200 else 1)"
 
-CMD ["python3","-m","uvicorn","abcdoc.api:app","--host","0.0.0.0","--port","8080"]
+CMD ["python3","-m","uvicorn","abcprint.api:app","--host","0.0.0.0","--port","8080"]

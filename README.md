@@ -1,4 +1,4 @@
-# abc-doc-svc
+# abc-print-svc
 
 Document compilation and compliance verification for thesis-style documents.
 
@@ -20,7 +20,7 @@ toolchain/font/verification half, which is what slice 1 needed to answer.
 ## Quick start
 
 ```bash
-docker run --rm -p 8080:8080 ghcr.io/abhi18av/abc-doc-svc:0.1.0
+docker run --rm -p 8080:8080 ghcr.io/abc-cluster/abc-print-svc:0.1.0
 ```
 
 | surface | where |
@@ -36,7 +36,7 @@ in the deployment it documents is not documentation.
 As a library:
 
 ```python
-from abcdoc import toolchain, fonts, equivalence
+from abcprint import toolchain, fonts, equivalence
 
 toolchain.detect().problems()                 # [] when the deployment can build
 fonts.health(["Calibri", "Cambria"])          # what will actually render
@@ -111,7 +111,7 @@ Licensed originals mounted at `/usr/local/share/fonts/licensed` win automaticall
 ```bash
 docker run --rm -p 8080:8080 \
   -v /path/to/licensed/fonts:/usr/local/share/fonts/licensed:ro \
-  ghcr.io/abhi18av/abc-doc-svc:0.1.0
+  ghcr.io/abc-cluster/abc-print-svc:0.1.0
 ```
 
 Because the faculty length rule is measured in **pages**, a substitution is a
@@ -129,7 +129,7 @@ against a locally rendered copy.
 
 ```bash
 ./docker/vendor-pipeline.sh          # vendor the pipeline scripts into the context
-docker build --platform linux/amd64 -t abc-doc-svc:0.1.0 -f Containerfile .
+docker build --platform linux/amd64 -t abc-print-svc:0.1.0 -f Containerfile .
 ```
 
 The pipeline scripts live in the dissertation repo today; extracting them is

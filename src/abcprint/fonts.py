@@ -14,7 +14,7 @@ mounted when the operator has a licence that covers server rendering.
 It does not mean the rendering is identical: hinting, kerning pairs and
 hyphenation can still differ. Whether pagination actually survives a given
 substitution is a measurable question, answered by rendering both ways and
-comparing with abcdoc.equivalence — never assumed.
+comparing with abcprint.equivalence — never assumed.
 """
 from __future__ import annotations
 
