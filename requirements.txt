@@ -1,0 +1,7 @@
+# The merge needs PdfWriter(clone_from=...), added in pypdf 3.9. Older versions
+# import fine and fail mid-merge, dropping the name tree and every internal link.
+pypdf>=3.9
+PyYAML>=6.0
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9

@@ -1,0 +1,204 @@
+"""HTTP surface over the library.
+
+One library, two access modes. Every endpoint is a thin shell over a function in
+abcdoc.* that is equally callable in-process, so the CLI added later is a third
+shell over the same code rather than a reimplementation.
+
+Docs are served at /redoc (reference) and /docs (try-it-out). Both are vendored
+into the image rather than loaded from a CDN, because the renderer is intended
+to run with no network egress and documentation that blanks out in the
+deployment it documents is not documentation.
+"""
+from __future__ import annotations
+
+import os
+import shutil
+import tempfile
+
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi.responses import JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
+
+from . import equivalence, fonts, toolchain
+from .models import Equivalence, FontHealth, Health, Toolchain as ToolchainModel
+
+REQUIRED_FONTS = ["Calibri", "Cambria", "Georgia", "Times New Roman", "Arial", "Helvetica Neue"]
+FONT_PATHS = [p for p in os.environ.get("ABCDOC_FONT_PATHS", "").split(os.pathsep) if p]
+VENDOR_DIR = os.environ.get("ABCDOC_VENDOR", "/srv/vendor")
+
+DESCRIPTION = """
+Document compilation and compliance verification for thesis-style documents.
+
+**The encoded rulebook is the product; the renderer is delivery.** A student can
+already turn text into a PDF. What costs them weeks near submission is satisfying
+a faculty rulebook that nobody has written down in executable form.
+
+### Why there is no byte-comparison endpoint
+
+Byte equality is the wrong test here, and that is measured rather than assumed.
+Building the same 230-page thesis twice on one machine, 30 seconds apart, gives
+two files of *identical length* that differ in roughly **84,000 bytes**:
+
+| source | fixable? |
+|---|---|
+| `/CreationDate`, `/ModDate` | yes — honour `SOURCE_DATE_EPOCH` |
+| `/ID[1]`, XMP `InstanceID` | no — random per render |
+| `/Font`, `/XObject`, `/ExtGState` emission order | no — per-process hash order |
+
+Those documents are nonetheless the same: equal page count, byte-identical
+`pdftotext -layout` output, pixel-identical pages. So `POST /equivalence` decides
+sameness on four planes instead, excluding volatile fields **by name** so that a
+new source of drift still fails.
+
+*Trap:* with `SOURCE_DATE_EPOCH` pinned, a **small** document does compare
+byte-identical, while the full thesis still differs by ~45,000 bytes. Validating
+reproducibility on a one-chapter sample gives the wrong answer.
+
+### Fonts
+
+The template names six proprietary families. The image ships metric-compatible
+libre substitutes so it works out of the box without redistributing anything;
+licensed originals mounted at `/usr/local/share/fonts/licensed` win automatically.
+Because the faculty length rule is measured in **pages**, substitution is a
+compliance event and is always declared, never silent.
+"""
+
+TAGS = [
+    {"name": "health", "description": "Is this deployment able to build at all? Check before blaming a document."},
+    {"name": "verification", "description": "Decide whether two builds are the same document."},
+]
+
+app = FastAPI(
+    title="abc-doc-svc",
+    version="0.1.0",
+    description=DESCRIPTION,
+    openapi_tags=TAGS,
+    license_info={"name": "Apache-2.0"},
+    docs_url=None,     # replaced below with offline-capable equivalents
+    redoc_url=None,
+)
+
+if os.path.isdir(VENDOR_DIR):
+    app.mount("/vendor", StaticFiles(directory=VENDOR_DIR), name="vendor")
+
+
+def _doc_page(title: str, script: str, body: str) -> HTMLResponse:
+    return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8">
+<title>{title}</title><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{{margin:0}}</style></head><body>{body}<script src="{script}"></script></body></html>""")
+
+
+@app.get("/redoc", include_in_schema=False)
+def redoc():
+    """Reference documentation, served from the image so it works with no egress."""
+    local = os.path.join(VENDOR_DIR, "redoc.standalone.js")
+    src = "/vendor/redoc.standalone.js" if os.path.exists(local) else \
+        "https://cdn.redoc.ly/redoc/latest/bundles/redoc.standalone.js"
+    return _doc_page("abc-doc-svc — API reference", src,
+                     '<redoc spec-url="/openapi.json"></redoc>')
+
+
+@app.get("/docs", include_in_schema=False)
+def docs():
+    """Swagger UI — the try-it-out surface for manual testing."""
+    local = os.path.join(VENDOR_DIR, "swagger-ui-bundle.js")
+    if os.path.exists(local):
+        js, css = "/vendor/swagger-ui-bundle.js", "/vendor/swagger-ui.css"
+    else:
+        js = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"
+        css = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css"
+    return HTMLResponse(f"""<!doctype html><html><head><meta charset="utf-8">
+<title>abc-doc-svc — try it out</title><link rel="stylesheet" href="{css}">
+<meta name="viewport" content="width=device-width,initial-scale=1"></head><body>
+<div id="ui"></div><script src="{js}"></script>
+<script>SwaggerUIBundle({{url:'/openapi.json',dom_id:'#ui'}});</script></body></html>""")
+
+
+@app.get("/", include_in_schema=False)
+def index():
+    return {"service": "abc-doc-svc", "version": "0.1.0",
+            "reference": "/redoc", "try_it_out": "/docs", "schema": "/openapi.json"}
+
+
+@app.get("/health", tags=["health"], response_model=Health,
+         summary="Can this deployment build?",
+         responses={503: {"description": "Deployment cannot build; `problems` names each reason."}})
+def health():
+    """Liveness plus the two things that actually break a deployment: a toolchain
+    that cannot merge, and fonts that are not there.
+
+    Returns **503** when either fails. A missing font directory is meant to fail
+    the *service's* health check rather than a student's build, so an operator
+    who mounted nothing finds out at deploy time and not from twenty students at
+    a submission deadline.
+    """
+    tc = toolchain.detect()
+    fh = fonts.health(REQUIRED_FONTS, FONT_PATHS or None)
+    problems = tc.problems() + ([] if fh["ok"] else [f"fonts unavailable: {fh['missing']}"])
+    body = {"ok": not problems, "problems": problems, "toolchain": tc.as_dict(),
+            "typst_mismatch": tc.typst_mismatch, "fonts": fh}
+    return JSONResponse(body, status_code=200 if not problems else 503)
+
+
+@app.get("/toolchain", tags=["health"], response_model=ToolchainModel,
+         summary="What rendered this document?")
+def get_toolchain():
+    """The manifest half that names the binaries deciding the output.
+
+    `typst_bundled` is authoritative: Quarto renders with its own typst, so
+    pinning a standalone typst pins a binary nothing reads.
+    """
+    tc = toolchain.detect()
+    return {**tc.as_dict(), "typst_mismatch": tc.typst_mismatch}
+
+
+@app.get("/fonts", tags=["health"], response_model=FontHealth,
+         summary="Which family will actually render?")
+def get_fonts(family: list[str] | None = Query(
+        default=None, description="Families to resolve. Defaults to the profile's required set.")):
+    """Resolve each requested family to the one that will render, and say whether
+    that is a substitution and whether the substitute is metric-compatible."""
+    return fonts.health(family or REQUIRED_FONTS, FONT_PATHS or None)
+
+
+@app.post("/equivalence", tags=["verification"], response_model=Equivalence,
+          summary="Are these two builds the same document?",
+          responses={422: {"description": "One of the uploads could not be read as a PDF."}})
+async def post_equivalence(
+    a: UploadFile = File(..., description="First PDF."),
+    b: UploadFile = File(..., description="Second PDF. May share a filename with the first."),
+    dpi: int = Query(72, ge=36, le=300, description="Raster DPI. Higher is stricter and slower."),
+    sample: int = Query(6, ge=0, le=2000,
+                        description="Pages to rasterise, spread across the document. 0 rasterises every page."),
+):
+    """Compare on four planes, strictest last: page count, extracted text with
+    layout, rendered pixels, and the metadata that should be stable.
+
+    Byte comparison is deliberately not offered — see the service description.
+    """
+    tmp = tempfile.mkdtemp(prefix="abcdoc-eq-")
+    try:
+        paths = []
+        for slot, up in (("a", a), ("b", b)):
+            # Each upload goes in its OWN directory. Writing both into one
+            # directory under their client-supplied basename collides whenever
+            # the two builds share a filename — which is the NORMAL case here,
+            # since comparing two builds of one document means comparing two
+            # files called thesis-assembled.pdf. That collision made the
+            # endpoint compare the second file with itself and report every
+            # such pair as equivalent.
+            slot_dir = os.path.join(tmp, slot)
+            os.makedirs(slot_dir, exist_ok=True)
+            dest = os.path.join(slot_dir, os.path.basename(up.filename or "in.pdf"))
+            if os.path.commonpath([slot_dir, os.path.abspath(dest)]) != slot_dir:
+                raise HTTPException(400, "invalid filename")
+            with open(dest, "wb") as fh:
+                shutil.copyfileobj(up.file, fh)
+            paths.append(dest)
+        try:
+            rep = equivalence.compare(paths[0], paths[1], dpi=dpi, sample=sample)
+        except Exception as exc:
+            raise HTTPException(422, f"could not read one of the PDFs: {exc}")
+        return rep.as_dict()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)

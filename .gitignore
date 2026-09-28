@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+.venv/
+_build/
+_out/
+*.egg-info/
+.pytest_cache/
+pipeline/
