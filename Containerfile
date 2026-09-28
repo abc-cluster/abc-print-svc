@@ -17,6 +17,16 @@
 # resolves the real family name ahead of the stand-in.
 FROM debian:bookworm-slim
 
+# Link the published package to its repository. Without
+# org.opencontainers.image.source a GHCR package is an orphan: it does not appear
+# on the repo page and does not inherit repo permissions, so org members who can
+# read the code still cannot pull the image.
+LABEL org.opencontainers.image.source="https://github.com/abc-cluster/abc-print-svc" \
+      org.opencontainers.image.description="Document compilation and compliance verification for thesis-style documents" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.title="abc-print-svc" \
+      org.opencontainers.image.version="0.1.0"
+
 ARG QUARTO_VERSION=1.7.31
 ARG PANDOC_VERSION=3.7.0.1
 ARG DEBIAN_FRONTEND=noninteractive
