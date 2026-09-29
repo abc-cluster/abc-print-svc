@@ -157,11 +157,17 @@ def create_quarto(root: str, profile_dir: str) -> dict:
     paths = {
         "repo": root,
         "src": os.path.join(root, "src"),
-        # Figures are written RELATIVE TO THE PROJECT ROOT, because a document
-        # references them by its own relative path (the nf-nomad manuscript uses
-        # ../assets/figures/current/...). Forcing them under src/ makes those
-        # references unresolvable.
-        "figures": root,
+        # Figures are written RELATIVE TO THE ENTRY DOCUMENT, because that is how
+        # a document references them. Combined with the traversal guard — which
+        # refuses any `..` component — this means a bundle can only reference
+        # figures inside its own directory, i.e. it must be self-contained. A
+        # bundle reaching out to ../assets/... is not portable, and the service
+        # declining to render it is the correct answer rather than a limitation.
+        #
+        # The profile's _extensions is the one exception and sits at the project
+        # root, because apaquarto emits ../_extensions/... from the document. That
+        # is the extension's own convention, not the bundle's.
+        "figures": os.path.join(root, "src"),
         "build": os.path.join(root, "_build"),
     }
     # The quarto engine resolves bibliographies relative to the entry document.
