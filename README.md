@@ -31,13 +31,17 @@ protection, or a `/validate` endpoint.
 | [Compile a hybrid thesis](docs/compile-a-hybrid-thesis.md) | conventional + published + manuscript chapters |
 | [Compile a manuscript](docs/compile-a-manuscript.md) | the quarto-render engine |
 | [Building and running](docs/building.md) | build from source, CORS, runtime options |
+| [Demo documents](examples/README.md) | fixture content; `./examples/run-demo.sh` verifies a deployment |
 | `/redoc` · `/docs` | live API reference and try-it-out, vendored into the image |
 
 ## Quick start
 
 ```bash
 docker run --rm -p 8080:8080 ghcr.io/abc-cluster/abc-print-svc:latest
+./examples/run-demo.sh          # confirm it works, using fixture content
 ```
+
+The image is multi-arch (`linux/amd64`, `linux/arm64`).
 
 | surface | where |
 |---|---|
@@ -167,7 +171,7 @@ against a locally rendered copy.
 
 ```bash
 ./docker/vendor-pipeline.sh
-docker build --platform linux/amd64 -t abc-print-svc:local -f Containerfile .
+docker build -t abc-print-svc:local -f Containerfile .
 ```
 
 Works from a clean clone. The thesis pipeline lives in a separate private repo and

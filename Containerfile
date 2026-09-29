@@ -31,6 +31,13 @@ ARG QUARTO_VERSION=1.7.31
 ARG PANDOC_VERSION=3.7.0.1
 ARG DEBIAN_FRONTEND=noninteractive
 
+# Build architecture. BuildKit populates TARGETARCH automatically; the legacy
+# builder (DOCKER_BUILDKIT=0) does NOT, so every use falls back to asking dpkg.
+# Both quarto and pandoc publish amd64 and arm64 .debs, and hardcoding amd64
+# meant an arm64 machine either emulated the whole build under qemu or installed
+# debs it could not run.
+ARG TARGETARCH
+
 # --- system toolchain -------------------------------------------------------
 # qpdf does the page surgery, poppler backs every regression check, fontconfig
 # resolves families for typst.
@@ -48,8 +55,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # --- quarto (brings the typst that renders) ---------------------------------
-RUN curl -fsSL -o /tmp/quarto.deb \
-      "https://github.com/quarto-dev/quarto-cli/releases/download/v${QUARTO_VERSION}/quarto-${QUARTO_VERSION}-linux-amd64.deb" \
+RUN ARCH="${TARGETARCH:-$(dpkg --print-architecture)}" \
+    && echo "building for ${ARCH}" \
+    && curl -fsSL -o /tmp/quarto.deb \
+      "https://github.com/quarto-dev/quarto-cli/releases/download/v${QUARTO_VERSION}/quarto-${QUARTO_VERSION}-linux-${ARCH}.deb" \
     && apt-get update && apt-get install -y --no-install-recommends /tmp/quarto.deb \
     && rm -f /tmp/quarto.deb && rm -rf /var/lib/apt/lists/*
 
@@ -57,8 +66,9 @@ RUN curl -fsSL -o /tmp/quarto.deb \
 # The pipeline shells out to `pandoc` directly for the DOCX path and the
 # markdown slicing, so it must be on PATH in its own right rather than only
 # inside quarto.
-RUN curl -fsSL -o /tmp/pandoc.deb \
-      "https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc-${PANDOC_VERSION}-1-amd64.deb" \
+RUN ARCH="${TARGETARCH:-$(dpkg --print-architecture)}" \
+    && curl -fsSL -o /tmp/pandoc.deb \
+      "https://github.com/jgm/pandoc/releases/download/${PANDOC_VERSION}/pandoc-${PANDOC_VERSION}-1-${ARCH}.deb" \
     && apt-get update && apt-get install -y --no-install-recommends /tmp/pandoc.deb \
     && rm -f /tmp/pandoc.deb && rm -rf /var/lib/apt/lists/*
 

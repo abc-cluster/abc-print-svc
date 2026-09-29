@@ -1,0 +1,86 @@
+---
+title: "Sorting Coloured Blocks: A Demonstration Document"
+shorttitle: "Sorting Coloured Blocks"
+abstract: >-
+  **Summary:** This document exists to exercise the compilation service. It is
+  not research and describes nothing real. It deliberately contains the features
+  that break document builds in practice: a cross-referenced figure, a
+  cross-referenced table, several citations resolved from a bibliography, nested
+  headings, inline code and a code block. Every author, result and reference in
+  it is invented.
+keywords: [demonstration, fixture, testing]
+bibliography: references.bib
+---
+
+# Introduction
+
+This is a fixture document. It is used to confirm that a deployment of the
+compilation service can render a manuscript end to end, and to give anyone
+writing a client something to submit that does not depend on a private
+repository.
+
+Nothing here is a finding. The subject — sorting small coloured blocks — was
+chosen because it is obviously not research, so no sentence in this document can
+be mistaken for a claim about the world [@example2020placeholder].
+
+## What this document exercises
+
+Prior fixtures have failed to catch real defects because they were too simple: a
+single paragraph renders under almost any misconfiguration. This one includes
+each construct that has actually broken a build.
+
+- A figure with a caption and a cross-reference, since a figure referenced by a
+  path that does not resolve stops the render.
+- A table with a caption and a label, since captions separated from their table
+  are a common defect.
+- Several citations, since a bibliography that is not sent is reported only as a
+  warning and the citations then silently vanish [@sample2019method;
+  @demo2021analysis].
+- Inline code such as `sort_blocks()` and a fenced block, since raw blocks and
+  code spans take different paths through the renderer.
+
+# Method
+
+Blocks were placed on a table and sorted by colour. The procedure was repeated
+three times. No blocks were harmed.
+
+```python
+def sort_blocks(blocks):
+    """Sort by colour. This is a fixture, not an implementation."""
+    return sorted(blocks, key=lambda b: b.colour)
+```
+
+The approach follows no established protocol, because there is none
+[@sample2019method].
+
+# Results
+
+@fig-demo shows the arrangement after sorting. @tbl-demo reports the counts.
+
+![Blocks after sorting, grouped by colour. The figure is generated, carries no
+data, and exists so that a cross-reference and an image path are both
+exercised.](figures/blocks.svg){#fig-demo width=60%}
+
+| Colour | Count | Notes                     |
+|--------|-------|---------------------------|
+| Red    | 4     | Invented                  |
+| Blue   | 3     | Also invented             |
+| Green  | 2     | Likewise                  |
+
+: Counts of blocks by colour. Every value is fabricated. {#tbl-demo}
+
+The counts sum to nine, which is the only verifiable statement in this document.
+
+# Discussion
+
+If this document rendered, the deployment can parse a manuscript, resolve a
+figure path, number and reference a figure and a table, resolve citations
+against a bibliography, and produce the requested output formats.
+
+If it did not, the failure is in the deployment rather than the document, which
+is the point of having a fixture [@demo2021analysis].
+
+# References
+
+::: {#refs}
+:::

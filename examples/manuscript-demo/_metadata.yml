@@ -1,0 +1,32 @@
+# Fixture metadata. Every author, affiliation and identifier below is invented.
+#
+# This file carries what the DOCUMENT is — authors, affiliations, the author
+# note. The profile supplies fonts, page setup and the reference style, and the
+# service merges the two with the profile on top. See docs/api-integration.md.
+author:
+  - name: Ada Example
+    corresponding: true
+    email: ada.example@example.invalid
+    affiliations:
+      - id: id1
+        name: Institute of Demonstration Studies
+        department: Department of Fixtures
+        city: Exampleton
+        country: Nowhere
+  - name: Bo Sample
+    affiliations:
+      - ref: id1
+
+author-note:
+  disclosures:
+    conflict-of-interest: The authors are fictional and declare no conflicts.
+
+floatsintext: true
+numbered-lines: true
+bibliography: references.bib
+link-citations: true
+lang: en
+
+# Suppress the APA fields a fixture has no meaningful values for.
+suppress-title-page: false
+suppress-short-title: true

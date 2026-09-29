@@ -4,7 +4,7 @@
 git clone https://github.com/abc-cluster/abc-print-svc.git
 cd abc-print-svc
 ./docker/vendor-pipeline.sh
-docker build --platform linux/amd64 -t abc-print-svc:local -f Containerfile .
+docker build -t abc-print-svc:local -f Containerfile .
 docker run --rm -p 8080:8080 abc-print-svc:local
 ```
 
@@ -52,7 +52,7 @@ To include the thesis engine, point the script at the repo:
 combinations stall there. Use the legacy builder:
 
 ```bash
-DOCKER_BUILDKIT=0 docker build --platform linux/amd64 -t abc-print-svc:local -f Containerfile .
+DOCKER_BUILDKIT=0 docker build -t abc-print-svc:local -f Containerfile .
 ```
 
 **`COPY pipeline/ … : not found`.** You skipped `vendor-pipeline.sh`. It creates
@@ -67,6 +67,16 @@ network fetches from GitHub, Google Fonts and two CDNs.
 **`pip install` fails with `from versions: none`.** A transient index failure,
 not a version conflict. Re-run.
 
+## Confirm it works
+
+```bash
+./examples/run-demo.sh
+```
+
+Fixture content ships in `examples/`, so this needs nothing private. It checks
+health, renders the demo manuscript, and verifies the output actually contains
+its citations, cross-references and figure.
+
 ## Just use the published image
 
 Building is only necessary if you are changing the service:
@@ -74,6 +84,9 @@ Building is only necessary if you are changing the service:
 ```bash
 docker pull ghcr.io/abc-cluster/abc-print-svc:latest
 ```
+
+The image is **multi-arch** — `linux/amd64` and `linux/arm64` — so an Apple
+Silicon or ARM Linux machine pulls a native image and needs no emulation.
 
 It is private to the `abc-cluster` org, so authenticate once:
 
