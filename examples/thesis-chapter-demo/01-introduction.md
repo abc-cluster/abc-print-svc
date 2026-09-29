@@ -12,9 +12,14 @@ that have actually broken thesis builds: a figure with a label and a width, a
 table with a caption and a label, a cross-reference to each, and a citation.
 
 The verification suite checks, among other things, that figures are numbered per
-chapter and contiguously, that the list of figures agrees with the body, and
-that every cross-reference resolves. A chapter with no figures and no tables
+chapter and contiguously, that the list of figures agrees with the body, that
+every cross-reference resolves, and that a References section exists
+[@fixture2020placeholder]. A chapter with no figures, tables or citations
 exercises none of that.
+
+It also checks that a figure's filename encodes the number it renders under, so
+the placeholder here is named `F1.1-placeholder.svg` rather than something
+arbitrary [@fixture2019method].
 
 ## A figure
 
@@ -22,7 +27,7 @@ exercises none of that.
 
 ![A generated placeholder figure. The shapes are arbitrary and the figure exists
 so that numbering, the list of figures, and a cross-reference are all
-exercised.](figures/placeholder.svg){#fig-fixture width=60%}
+exercised.](figures/F1.1-placeholder.svg){#fig-fixture width=60%}
 
 ## A table
 

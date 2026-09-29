@@ -34,6 +34,7 @@ job=$(curl -fsS -X POST "$BASE/compile/manuscript" \
   -F "sources=@$DEMO/_metadata.yml" \
   -F "bibliography=@$DEMO/references.bib" \
   -F "figures=@$DEMO/figures/blocks.svg;filename=figures/blocks.svg" \
+  -F "quarto_metadata=<$DEMO/quarto-metadata.yaml" \
   -F "profile=biorxiv-dev" -F "outputs=pdf" \
   | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
 say "  job $job"

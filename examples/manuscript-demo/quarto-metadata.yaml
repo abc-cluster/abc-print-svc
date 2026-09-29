@@ -1,0 +1,30 @@
+# Optional per-build overrides, sent as the `quarto_metadata` form field.
+#
+# This is the advanced-user escape hatch. It is merged into the metadata the
+# render sees AFTER the profile, so it genuinely overrides the profile — an
+# escape hatch that cannot override is not one.
+#
+# Precedence, lowest first:
+#   _metadata.yml            what the document IS (authors, abstract, keywords)
+#   the profile              what the PROFILE governs (fonts, page, csl)
+#   profile.quarto_metadata  profile-level passthrough
+#   THIS FILE                per-build override
+#
+# Around twenty keys are refused BY NAME because they run code or read a
+# client-chosen path — execute, engine, jupyter, knitr, filters, shortcodes,
+# pre-render, post-render, project, template, include-*, resource-path,
+# pdf-engine, output-*. Refusal is a 400 at submit time, not a failure after a
+# build. `GET /profiles` returns the live list with a reason per key.
+#
+# Send it with:
+#   -F "quarto_metadata=<quarto-metadata.yaml"      (curl reads the file CONTENTS)
+# Note `<` and not `@`: `@` would upload it as a file part, and this field is a
+# string.
+
+# Suppress the build-date stamp, so two renders of unchanged sources differ by
+# less. Left on, it prints today's date on the title page — rendered content,
+# which means /equivalence correctly reports two such builds as different.
+draft-date: false
+
+# Keep floats where they are written rather than collecting them at the end.
+floatsintext: true
