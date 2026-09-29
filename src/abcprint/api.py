@@ -24,7 +24,8 @@ from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import compile as compiler, delivery, equivalence, fonts, jobs, profile as profiles, toolchain, workspace
-from .models import Equivalence, FontHealth, Health, Toolchain as ToolchainModel
+from .models import (DeliveryResult, Equivalence, FontHealth, Health, Job as JobModel,
+                     JobList, ProfileList, Toolchain as ToolchainModel)
 
 REQUIRED_FONTS = ["Calibri", "Cambria", "Georgia", "Times New Roman", "Arial", "Helvetica Neue"]
 FONT_PATHS = [p for p in os.environ.get("ABCPRINT_FONT_PATHS", "").split(os.pathsep) if p]
@@ -335,12 +336,19 @@ async def post_compile(
     return JSONResponse({**job.as_dict(), "detected_chapters": found}, status_code=202)
 
 
-@app.get("/jobs", tags=["compile"], summary="Recent jobs")
+@app.get("/jobs", tags=["compile"], response_model=JobList, summary="Recent jobs")
 def list_jobs(limit: int = Query(20, ge=1, le=200)):
+    """Most recent jobs, newest first.
+
+    The store is in-process and bounded, so jobs do not survive a restart of the
+    service. A client that needs durable history should record the manifest it
+    gets back rather than relying on this.
+    """
     return {"jobs": [j.as_dict() for j in jobs.STORE.list(limit)]}
 
 
-@app.get("/jobs/{job_id}", tags=["compile"], summary="Job state, manifest and check report")
+@app.get("/jobs/{job_id}", tags=["compile"], response_model=JobModel,
+         summary="Job state, manifest and check report")
 def get_job(job_id: str):
     """The manifest travels with the result: toolchain, font resolutions and the
     pinned epoch, so a rebuild is a meaningful claim. The check report travels
@@ -351,8 +359,18 @@ def get_job(job_id: str):
     return job.as_dict()
 
 
-@app.get("/jobs/{job_id}/artifacts/{name}", tags=["compile"], summary="Download an artefact")
+@app.get("/jobs/{job_id}/artifacts/{name}", tags=["compile"],
+         summary="Download an artefact",
+         responses={200: {"content": {"application/octet-stream": {}},
+                          "description": "The file."},
+                    409: {"description": "The job has not succeeded."},
+                    410: {"description": "The job's workspace has been reclaimed."}})
 def get_artifact(job_id: str, name: str):
+    """Stream one artefact by the `name` given in the job's `artifacts` list.
+
+    Available only once the job has succeeded. A name that is not in that list is
+    a 404 whose message names what the job did produce.
+    """
     job = jobs.STORE.get(job_id)
     if job is None:
         raise HTTPException(404, "no such job")
@@ -399,7 +417,10 @@ def delivery_destinations():
     }
 
 
-@app.post("/jobs/{job_id}/deliver", tags=["delivery"], summary="Deliver an artefact")
+@app.post("/jobs/{job_id}/deliver", tags=["delivery"], response_model=DeliveryResult,
+          summary="Deliver an artefact",
+          responses={503: {"description": "That destination is not configured on this deployment; "
+                                          "check GET /delivery/destinations first."}})
 def deliver(
     job_id: str,
     artifact: str = Form(..., description="Artefact name from the job's `artifacts` list."),
@@ -409,6 +430,18 @@ def deliver(
     subdir: str | None = Form(None, description="downloads: optional subfolder."),
     filename: str | None = Form(None, description="Override the delivered filename."),
 ):
+    """Send a finished artefact to its destination.
+
+    Two destinations. `downloads` copies into a directory the operator mounted
+    into the container; `minio` puts the file at `s3://<bucket>/<key>` in the
+    user's own prefix. Check `GET /delivery/destinations` first — an unconfigured
+    destination returns **503** naming what the operator must set, rather than
+    failing after the fact.
+
+    PDF password protection is **not implemented**. It will attach here, at this
+    boundary, when it is; until then a delivered file is not protected and a
+    client should not imply otherwise.
+    """
     job = jobs.STORE.get(job_id)
     if job is None:
         raise HTTPException(404, "no such job")
@@ -429,7 +462,8 @@ def deliver(
 
 # ── profiles ────────────────────────────────────────────────────────────────
 
-@app.get("/profiles", tags=["compile"], summary="Profiles this deployment offers")
+@app.get("/profiles", tags=["compile"], response_model=ProfileList,
+         summary="Profiles this deployment offers")
 def list_profiles():
     """A profile selects an ENGINE and configures it.
 

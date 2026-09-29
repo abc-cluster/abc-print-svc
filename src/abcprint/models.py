@@ -95,3 +95,95 @@ class Equivalence(BaseModel):
         "pixel_pages_checked": [1, 39, 77, 115, 153, 191, 230], "pixel_mismatches": [],
         "meta_equal": True, "meta_diff": {}, "failures": [],
         "volatile_excluded": ["/ID[1]", "/CreationDate", "/ModDate"]}}}
+
+
+class Artifact(BaseModel):
+    name: str = Field(..., description="Filename. Use it with GET /jobs/{id}/artifacts/{name}.")
+    bytes: int = Field(..., description="Size of the produced file.")
+    media_type: str = Field(..., description="MIME type, e.g. application/pdf.")
+
+
+class Checks(BaseModel):
+    passed: int | None = None
+    failed: int | None = None
+    warnings: int | None = None
+    failures: list[str] = Field(default_factory=list,
+                                description="One line per failed check, naming the rule.")
+    warning_detail: list[str] = Field(default_factory=list)
+    all_clear: bool | None = Field(
+        None, description="null when the profile defines no compliance rules.")
+    note: str | None = None
+
+
+class Job(BaseModel):
+    """A compilation job. Poll this until `state` is terminal.
+
+    `state` is `queued` -> `running` -> `succeeded` | `failed`. Note that
+    **`succeeded` does not mean compliant**: a document can be produced and still
+    fail its checks, which is what `compliant` is for. A job only fails when no
+    document was produced at all.
+    """
+    id: str
+    state: str = Field(..., description="queued | running | succeeded | failed.")
+    created: float
+    started: float | None = None
+    finished: float | None = None
+    duration_s: float = 0.0
+    options: dict = Field(default_factory=dict, description="What was requested.")
+    artifacts: list[Artifact] = Field(default_factory=list)
+    compliant: bool | None = Field(
+        None,
+        description=("Whether the document satisfies the profile's compliance rules. "
+                     "**null** when the profile defines none — a profile with nothing "
+                     "to check must not claim compliance."))
+    manifest: dict = Field(
+        default_factory=dict,
+        description=("Everything that decided this output: toolchain versions, the "
+                     "profile and its version, font resolutions, the pinned "
+                     "SOURCE_DATE_EPOCH, and the effective Quarto metadata. Returned "
+                     "WITH the artefact so a rebuild is a claim rather than a hope."))
+    checks: Checks = Field(default_factory=Checks)
+    error: str | None = Field(None, description="Set when `state` is failed.")
+    log_tail: list[str] = Field(
+        default_factory=list,
+        description="Last lines of the build log. Populated on failure too.")
+
+
+class JobList(BaseModel):
+    jobs: list[Job] = Field(default_factory=list)
+
+
+class ProfileInfo(BaseModel):
+    name: str
+    version: str = "unversioned"
+    ref: str = Field("", description="name@version — quote this in a compile request.")
+    schema_version: int = 1
+    engine: str = Field(..., description="thesis-assemble | quarto-render.")
+    description: str = ""
+    template: dict = Field(default_factory=dict)
+    page: dict = Field(default_factory=dict)
+    fonts: dict = Field(default_factory=dict)
+    bibliography: dict = Field(default_factory=dict)
+    layout: dict = Field(default_factory=dict)
+    rules: dict = Field(default_factory=dict)
+    checks: dict = Field(default_factory=dict)
+    open_to_build: list[str] = Field(
+        default_factory=list, description="Keys a build request may override.")
+    has_compliance_rules: bool = Field(
+        False, description="False means jobs under this profile report compliant: null.")
+
+
+class ProfileList(BaseModel):
+    profiles: list[ProfileInfo] = Field(default_factory=list)
+    refused_quarto_metadata_keys: dict = Field(
+        default_factory=dict,
+        description=("Keys refused inside `quarto_metadata`, mapped to the reason. "
+                     "Each either runs code or reads a client-chosen path."))
+
+
+class DeliveryResult(BaseModel):
+    destination: str = Field(..., description="downloads | minio.")
+    path: str | None = Field(None, description="downloads: where it landed.")
+    uri: str | None = Field(None, description="minio: s3://bucket/key.")
+    endpoint: str | None = None
+    bytes: int

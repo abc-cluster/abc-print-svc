@@ -13,17 +13,29 @@ planned as a third shell over the same code, not a reimplementation.
 
 ## Status
 
-Compiles a real hybrid thesis end to end: 9 chapters, 4 spliced papers, 101
-figures, 16 bibliographies, 21 checks, ~33 s. See
-[docs/compile-a-hybrid-thesis.md](docs/compile-a-hybrid-thesis.md).
+Two engines, two profiles, verified against real documents rather than fixtures:
 
-Profile extraction is still pending — the SU/FMHS profile is vendored from the
-dissertation repo at build time rather than owned here.
+- a **hybrid thesis** — 9 chapters, 4 spliced papers, 101 figures, 16
+  bibliographies, 21 checks, ~33 s
+- a **manuscript** — the nf-nomad bioRxiv bundle, 28 pages matching its archived
+  build exactly, PDF + DOCX in ~9 s
+
+Not yet: authentication, webhooks, a durable job store, retention, PDF password
+protection, or a `/validate` endpoint.
+
+## Documentation
+
+| | |
+|---|---|
+| [Writing a client / plugin](docs/api-integration.md) | the contract, job lifecycle, error shapes, config sourcing |
+| [Compile a hybrid thesis](docs/compile-a-hybrid-thesis.md) | conventional + published + manuscript chapters |
+| [Compile a manuscript](docs/compile-a-manuscript.md) | the quarto-render engine |
+| `/redoc` · `/docs` | live API reference and try-it-out, vendored into the image |
 
 ## Quick start
 
 ```bash
-docker run --rm -p 8080:8080 ghcr.io/abc-cluster/abc-print-svc:0.1.0
+docker run --rm -p 8080:8080 ghcr.io/abc-cluster/abc-print-svc:0.4.1
 ```
 
 | surface | where |
@@ -39,28 +51,42 @@ in the deployment it documents is not documentation.
 As a library:
 
 ```python
-from abcprint import toolchain, fonts, equivalence
+from abcprint import toolchain, fonts, equivalence, profile
 
 toolchain.detect().problems()                 # [] when the deployment can build
 fonts.health(["Calibri", "Cambria"])          # what will actually render
 equivalence.compare("a.pdf", "b.pdf")         # are these the same document?
+profile.load("biorxiv-dev@0.1")               # the rulebook as data
 ```
+
+## Engines and profiles
+
+A profile **selects** an engine and configures it. That is not an accident of
+naming: the manuscript path needs none of the thesis engine — no measure pass, no
+page reservation, no splice — because those exist to serve inserted papers and a
+faculty front matter.
+
+| profile | engine | for | compliance rules |
+|---|---|---|---|
+| `su-fmhs` | `thesis-assemble` | SU/FMHS thesis, spliced papers | embedded in the template |
+| `biorxiv-dev@0.1` | `quarto-render` | internal development PDFs | **none, by design** |
+
+A profile with no rules reports `compliant: null`, never `true`.
 
 ## Endpoints
 
 | method | path | purpose |
 |---|---|---|
-| POST | `/compile` | Push sources, get a job. **202** + job id. |
+| POST | `/compile` | Thesis. **202** + job id. |
+| POST | `/compile/manuscript` | Manuscript. **202** + job id. |
 | GET | `/jobs/{id}` | State, manifest, check report, `compliant`. |
-| GET | `/jobs/{id}/artifacts/{name}` | Download a built artefact. |
+| GET | `/jobs/{id}/artifacts/{name}` | Download an artefact. |
 | POST | `/jobs/{id}/deliver` | Deliver to `downloads` or `minio`. |
+| GET | `/profiles` | Profiles, engines, and the refused `quarto_metadata` keys. |
 | GET | `/delivery/destinations` | What this deployment can deliver to. |
 | GET | `/health` | Can this deployment build? **503** when not. |
-| GET | `/toolchain` | What rendered this — the manifest half. |
-| GET | `/fonts` | Which family will actually render, and is it a substitution? |
+| GET | `/toolchain` · `/fonts` | What rendered this; what will actually render. |
 | POST | `/equivalence` | Are two builds the same document? |
-
----
 
 ## What slice 1 established
 
