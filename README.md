@@ -30,12 +30,13 @@ protection, or a `/validate` endpoint.
 | [Writing a client / plugin](docs/api-integration.md) | the contract, job lifecycle, error shapes, config sourcing |
 | [Compile a hybrid thesis](docs/compile-a-hybrid-thesis.md) | conventional + published + manuscript chapters |
 | [Compile a manuscript](docs/compile-a-manuscript.md) | the quarto-render engine |
+| [Building and running](docs/building.md) | build from source, CORS, runtime options |
 | `/redoc` · `/docs` | live API reference and try-it-out, vendored into the image |
 
 ## Quick start
 
 ```bash
-docker run --rm -p 8080:8080 ghcr.io/abc-cluster/abc-print-svc:0.4.1
+docker run --rm -p 8080:8080 ghcr.io/abc-cluster/abc-print-svc:latest
 ```
 
 | surface | where |
@@ -165,18 +166,14 @@ against a locally rendered copy.
 ## Build
 
 ```bash
-./docker/vendor-pipeline.sh          # vendor the pipeline scripts into the context
-docker build --platform linux/amd64 -t abc-print-svc:0.1.0 -f Containerfile .
+./docker/vendor-pipeline.sh
+docker build --platform linux/amd64 -t abc-print-svc:local -f Containerfile .
 ```
 
-The pipeline scripts live in the dissertation repo today; extracting them is
-slice 2's work, and `docker/vendor-pipeline.sh` is the single place that knows
-where they came from.
-
-Font and documentation downloads are **fatal on failure** by design. An earlier
-revision swallowed them with `|| echo NOTE` and produced an image that built
-"successfully" with Georgia missing — the same shape of defect as the qpdf merge
-fallback, where a warning nobody reads stands in for a failure.
+Works from a clean clone. The thesis pipeline lives in a separate private repo and
+is **optional** — without it the image runs everything except `POST /compile`, and
+`/health` reports `engines_available`. Full detail, including the BuildKit stall
+and CORS, is in **[docs/building.md](docs/building.md)**.
 
 ## Not in scope
 

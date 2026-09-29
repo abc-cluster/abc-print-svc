@@ -21,6 +21,7 @@ import tempfile as _tempfile
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Form, BackgroundTasks
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from . import compile as compiler, delivery, equivalence, fonts, jobs, profile as profiles, toolchain, workspace
@@ -90,6 +91,27 @@ app = FastAPI(
     redoc_url=None,
 )
 
+# CORS. A plugin running inside an editor is a browser context, so without this
+# every call is blocked before it reaches a handler — the request never appears in
+# the service log, which makes it look like the service is down rather than
+# refusing.
+#
+# The default is permissive because this service has no authentication and is
+# expected to run locally, where the alternative is that nothing works out of the
+# box. An internet-facing deployment should set ABCPRINT_CORS_ORIGINS to an
+# explicit list; note that with `*` any page the user visits can drive the service.
+# Credentials are never allowed, which the CORS spec requires alongside `*` anyway.
+CORS_ORIGINS = [o.strip() for o in
+                os.environ.get("ABCPRINT_CORS_ORIGINS", "*").split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
+)
+
 if os.path.isdir(VENDOR_DIR):
     app.mount("/vendor", StaticFiles(directory=VENDOR_DIR), name="vendor")
 
@@ -132,6 +154,20 @@ def index():
             "reference": "/redoc", "try_it_out": "/docs", "schema": "/openapi.json"}
 
 
+def _engines_available() -> dict:
+    """Which engines this image can actually run.
+
+    The thesis engine needs the pipeline scripts vendored at build time; an image
+    built without them can still run the quarto-render engine. Reporting that is
+    better than accepting a thesis job and failing it 30 seconds later.
+    """
+    pipeline = os.environ.get("ABCPRINT_PIPELINE", "/srv/pipeline")
+    return {
+        "quarto-render": True,
+        "thesis-assemble": os.path.isfile(os.path.join(pipeline, "thesis-assemble.sh")),
+    }
+
+
 @app.get("/health", tags=["health"], response_model=Health,
          summary="Can this deployment build?",
          responses={503: {"description": "Deployment cannot build; `problems` names each reason."}})
@@ -148,7 +184,9 @@ def health():
     fh = fonts.health(REQUIRED_FONTS, FONT_PATHS or None)
     problems = tc.problems() + ([] if fh["ok"] else [f"fonts unavailable: {fh['missing']}"])
     body = {"ok": not problems, "problems": problems, "toolchain": tc.as_dict(),
-            "typst_mismatch": tc.typst_mismatch, "fonts": fh}
+            "typst_mismatch": tc.typst_mismatch, "fonts": fh,
+            "cors_allowed_origins": CORS_ORIGINS,
+            "engines_available": _engines_available()}
     return JSONResponse(body, status_code=200 if not problems else 503)
 
 
@@ -306,6 +344,12 @@ async def post_compile(
     """
     if not sources:
         raise HTTPException(400, "no sources supplied")
+    if not _engines_available()["thesis-assemble"]:
+        raise HTTPException(
+            503,
+            "this image was built without the thesis pipeline, so the "
+            "thesis-assemble engine is unavailable. Use POST /compile/manuscript, "
+            "or rebuild with the pipeline vendored (see docs/building.md).")
     root = _tempfile.mkdtemp(prefix="abcprint-job-")
     try:
         paths = workspace.create(root)

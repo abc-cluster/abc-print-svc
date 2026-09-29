@@ -72,6 +72,14 @@ class Health(BaseModel):
     toolchain: Toolchain
     typst_mismatch: bool = False
     fonts: FontHealth
+    cors_allowed_origins: list[str] = Field(
+        default_factory=list,
+        description=("Origins this deployment accepts browser calls from. `[\"*\"]` means any. "
+                     "Set ABCPRINT_CORS_ORIGINS to restrict."))
+    engines_available: dict = Field(
+        default_factory=dict,
+        description=("Which engines this image can run. `thesis-assemble` is false when the "
+                     "image was built without the thesis pipeline; `quarto-render` always works."))
 
 
 class Equivalence(BaseModel):
