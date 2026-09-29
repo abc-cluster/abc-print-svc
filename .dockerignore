@@ -1,9 +1,9 @@
+.git/
+.gitignore
+.venv/
 __pycache__/
 *.pyc
-.venv/
+tests/
 _build/
 _out/
-*.egg-info/
 .pytest_cache/
-pipeline/
-profiles/su-fmhs/

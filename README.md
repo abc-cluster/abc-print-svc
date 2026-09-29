@@ -13,9 +13,12 @@ planned as a third shell over the same code, not a reimplementation.
 
 ## Status
 
-Slice 1 — containerise the pipeline and establish what reproducibility means
-here. The render endpoint is **not implemented yet**; what ships is the
-toolchain/font/verification half, which is what slice 1 needed to answer.
+Compiles a real hybrid thesis end to end: 9 chapters, 4 spliced papers, 101
+figures, 16 bibliographies, 21 checks, ~33 s. See
+[docs/compile-a-hybrid-thesis.md](docs/compile-a-hybrid-thesis.md).
+
+Profile extraction is still pending — the SU/FMHS profile is vendored from the
+dissertation repo at build time rather than owned here.
 
 ## Quick start
 
@@ -47,6 +50,11 @@ equivalence.compare("a.pdf", "b.pdf")         # are these the same document?
 
 | method | path | purpose |
 |---|---|---|
+| POST | `/compile` | Push sources, get a job. **202** + job id. |
+| GET | `/jobs/{id}` | State, manifest, check report, `compliant`. |
+| GET | `/jobs/{id}/artifacts/{name}` | Download a built artefact. |
+| POST | `/jobs/{id}/deliver` | Deliver to `downloads` or `minio`. |
+| GET | `/delivery/destinations` | What this deployment can deliver to. |
 | GET | `/health` | Can this deployment build? **503** when not. |
 | GET | `/toolchain` | What rendered this — the manifest half. |
 | GET | `/fonts` | Which family will actually render, and is it a substitution? |
@@ -114,8 +122,11 @@ docker run --rm -p 8080:8080 \
   ghcr.io/abc-cluster/abc-print-svc:0.1.0
 ```
 
-Because the faculty length rule is measured in **pages**, a substitution is a
-compliance event, not a cosmetic one. `on_substitution` defaults to `fail`, and a
+**Measured, not assumed:** the same thesis renders **230 pages** with licensed
+Calibri/Cambria mounted and **224 pages** with the shipped libre set — both fully
+correct, all checks passing, but a **6-page difference**. Since the faculty length
+rule is measured in **pages**, a substitution is a compliance event, not a
+cosmetic one. `on_substitution` defaults to `fail`, and a
 substitution is always declared. Whether a given substitution preserves pagination
 is a *measurable* question — render both ways and compare with `/equivalence`.
 

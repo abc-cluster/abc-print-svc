@@ -124,12 +124,15 @@ COPY pipeline/ /srv/pipeline/
 ENV PYTHONPATH=/srv/src \
     ABCPRINT_VENDOR=/srv/vendor \
     ABCPRINT_FONT_PATHS=/usr/local/share/fonts/licensed:/usr/local/share/fonts/ofl \
-    ABCPRINT_PIPELINE=/srv/pipeline
+    ABCPRINT_PIPELINE=/srv/pipeline \
+    ABCPRINT_PROFILE=/srv/profiles/su-fmhs \
+    ABCPRINT_DOWNLOADS=/srv/downloads
 
 # Render unprivileged: arbitrary markdown is arbitrary input, and the service
 # must not be a foothold. Network egress, read-only root and resource caps are
 # applied at run time by the orchestrator, not here.
-RUN useradd -m -u 10001 abcprint && mkdir -p /srv/work && chown -R abcprint /srv/work
+RUN useradd -m -u 10001 abcprint && mkdir -p /srv/work /srv/downloads \
+    && chown -R abcprint /srv/work /srv/downloads
 USER abcprint
 
 EXPOSE 8080

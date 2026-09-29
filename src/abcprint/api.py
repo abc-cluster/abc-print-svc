@@ -15,11 +15,15 @@ import os
 import shutil
 import tempfile
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
-from fastapi.responses import JSONResponse, HTMLResponse
+import json
+import shutil as _shutil
+import tempfile as _tempfile
+
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Form, BackgroundTasks
+from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import equivalence, fonts, toolchain
+from . import compile as compiler, delivery, equivalence, fonts, jobs, toolchain, workspace
 from .models import Equivalence, FontHealth, Health, Toolchain as ToolchainModel
 
 REQUIRED_FONTS = ["Calibri", "Cambria", "Georgia", "Times New Roman", "Arial", "Helvetica Neue"]
@@ -64,6 +68,13 @@ compliance event and is always declared, never silent.
 """
 
 TAGS = [
+    {"name": "compile", "description":
+        "Push sources, get a document. This is the surface an editor plugin (Logseq, or "
+        "anything else that holds the text) talks to: POST the markdown, poll the job, "
+        "then either download the artefact or have the service deliver it."},
+    {"name": "delivery", "description":
+        "Where a finished artefact goes: the user's object-store prefix, or a mounted "
+        "downloads directory."},
     {"name": "health", "description": "Is this deployment able to build at all? Check before blaming a document."},
     {"name": "verification", "description": "Decide whether two builds are the same document."},
 ]
@@ -202,3 +213,184 @@ async def post_equivalence(
         return rep.as_dict()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ── compile ─────────────────────────────────────────────────────────────────
+
+def _run_job(job_id: str, root: str, chapters, copy: str, run_checks: bool) -> None:
+    """Background worker. Failures are recorded on the job, never swallowed."""
+    job = jobs.STORE.get(job_id)
+    if job is None:
+        return
+    job.state, job.started = jobs.State.RUNNING, __import__("time").time()
+    try:
+        paths = {"repo": root, "thesis": os.path.join(root, "writeup", "thesis"),
+                 "figures": os.path.join(root, "writeup", "figures"),
+                 "inserted": os.path.join(root, "writeup", "inserted-papers"),
+                 "bin": os.path.join(root, "writeup", "bin"),
+                 "quarto": os.path.join(root, "writeup", "thesis-quarto"),
+                 "build": os.path.join(root, "writeup", "_build")}
+        result = compiler.run(paths, chapters, copy=copy, run_checks=run_checks)
+        job.artifacts = result["artifacts"]
+        job.compliant = result.get("compliant")
+        job.manifest = result["manifest"]
+        job.checks = result["checks"]
+        job.log_tail = result["log_tail"]
+        job.state = jobs.State.SUCCEEDED
+    except Exception as exc:
+        job.error = str(exc)
+        job.log_tail = getattr(exc, "log_tail", []) or []
+        job.state = jobs.State.FAILED
+    finally:
+        job.finished = __import__("time").time()
+
+
+@app.post("/compile", tags=["compile"], status_code=202,
+          summary="Submit sources for compilation",
+          responses={202: {"description": "Accepted. Poll `/jobs/{id}`."},
+                     400: {"description": "The bundle was rejected; the message names why."}})
+async def post_compile(
+    background: BackgroundTasks,
+    sources: list[UploadFile] = File(
+        ..., description="Markdown files. Chapter files are named `NN-slug.md`; anything "
+                         "else is treated as front matter."),
+    figures: list[UploadFile] = File(default=[], description="Images referenced by the sources."),
+    inserted: list[UploadFile] = File(
+        default=[], description="Publisher PDFs spliced in whole, for manuscript-based chapters."),
+    bibliography: list[UploadFile] = File(
+        default=[], description="BibTeX files. `references.bib` is the main one; files named "
+                                "`_<area>-refs-<date>.bib` are placed beside the chapters, where "
+                                "the pipeline auto-includes them. Citations arrive as BibTeX; "
+                                "that boundary is settled."),
+    chapters: str | None = Form(
+        default=None, description='Chapter prefixes to build, comma-separated, e.g. "01,04,07". '
+                                  "Omit to build every chapter found."),
+    copy: str = Form("examination", description='"examination" or "submission". The submission copy '
+                                               "adds the branded title frame and the Afrikaans Opsomming."),
+    checks: bool = Form(True, description="Run the verification suite. Leave on: verification is the product."),
+):
+    """Accept a bundle and start a build.
+
+    The build is multi-pass — render once to measure where inserted papers land,
+    re-render with that many pages reserved, then splice — so this returns **202**
+    with a job id rather than blocking. A single synchronous `POST /compile`
+    taking a markdown string could not express it.
+    """
+    if not sources:
+        raise HTTPException(400, "no sources supplied")
+    root = _tempfile.mkdtemp(prefix="abcprint-job-")
+    try:
+        paths = workspace.create(root)
+        for up in sources:
+            workspace.write_source(paths, up.filename, await up.read())
+        for up in figures:
+            workspace.write_asset(paths, "figure", up.filename, await up.read())
+        for up in inserted:
+            workspace.write_asset(paths, "inserted", up.filename, await up.read())
+        for up in bibliography:
+            workspace.write_asset(paths, "bib", up.filename or "references.bib", await up.read())
+        found = workspace.detected_chapters(paths)
+        wanted = [c.strip() for c in chapters.split(",") if c.strip()] if chapters else None
+        if wanted:
+            missing = [c for c in wanted if c not in found]
+            if missing:
+                raise HTTPException(400, f"requested chapters not in the bundle: {missing}; found {found}")
+    except workspace.BundleError as exc:
+        _shutil.rmtree(root, ignore_errors=True)
+        raise HTTPException(400, str(exc))
+    except HTTPException:
+        _shutil.rmtree(root, ignore_errors=True)
+        raise
+
+    job = jobs.STORE.create({"chapters": wanted or found, "copy": copy, "checks": checks})
+    job.workdir = root
+    background.add_task(_run_job, job.id, root, wanted, copy, checks)
+    return JSONResponse({**job.as_dict(), "detected_chapters": found}, status_code=202)
+
+
+@app.get("/jobs", tags=["compile"], summary="Recent jobs")
+def list_jobs(limit: int = Query(20, ge=1, le=200)):
+    return {"jobs": [j.as_dict() for j in jobs.STORE.list(limit)]}
+
+
+@app.get("/jobs/{job_id}", tags=["compile"], summary="Job state, manifest and check report")
+def get_job(job_id: str):
+    """The manifest travels with the result: toolchain, font resolutions and the
+    pinned epoch, so a rebuild is a meaningful claim. The check report travels
+    with it too, rather than being left in a log nobody reads."""
+    job = jobs.STORE.get(job_id)
+    if job is None:
+        raise HTTPException(404, "no such job")
+    return job.as_dict()
+
+
+@app.get("/jobs/{job_id}/artifacts/{name}", tags=["compile"], summary="Download an artefact")
+def get_artifact(job_id: str, name: str):
+    job = jobs.STORE.get(job_id)
+    if job is None:
+        raise HTTPException(404, "no such job")
+    if job.state is not jobs.State.SUCCEEDED:
+        raise HTTPException(409, f"job is {job.state.value}, not succeeded")
+    path = _artifact_path(job, name)
+    return FileResponse(path, filename=os.path.basename(path))
+
+
+def _artifact_path(job, name: str) -> str:
+    if not job.workdir:
+        raise HTTPException(410, "job workspace has been reclaimed")
+    known = {a["name"] for a in job.artifacts}
+    if name not in known:
+        raise HTTPException(404, f"no such artefact; this job produced {sorted(known)}")
+    build = os.path.join(job.workdir, "writeup", "_build")
+    path = os.path.abspath(os.path.join(build, os.path.basename(name)))
+    if os.path.commonpath([os.path.abspath(build), path]) != os.path.abspath(build) \
+            or not os.path.isfile(path):
+        raise HTTPException(404, "artefact is gone")
+    return path
+
+
+# ── delivery ────────────────────────────────────────────────────────────────
+
+@app.get("/delivery/destinations", tags=["delivery"],
+         summary="Which destinations this deployment can actually use")
+def delivery_destinations():
+    """Report configuration rather than let a delivery fail later with a surprise.
+
+    PDF password protection is deliberately NOT implemented yet; it will attach
+    here, at the delivery boundary.
+    """
+    return {
+        "downloads": {"available": delivery.downloads_available(), "path": delivery.DOWNLOADS_DIR,
+                      "hint": 'mount with -v "$HOME/Downloads":' + delivery.DOWNLOADS_DIR},
+        "minio": {"configured": delivery.minio_configured(),
+                  "hint": "set ABCPRINT_S3_ENDPOINT, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY"},
+        "pdf_password_protection": {"implemented": False, "note": "deferred by decision"},
+    }
+
+
+@app.post("/jobs/{job_id}/deliver", tags=["delivery"], summary="Deliver an artefact")
+def deliver(
+    job_id: str,
+    artifact: str = Form(..., description="Artefact name from the job's `artifacts` list."),
+    destination: str = Form(..., description='"downloads" or "minio".'),
+    bucket: str | None = Form(None, description="minio: target bucket."),
+    key: str | None = Form(None, description="minio: object key, e.g. users/<you>/thesis.pdf"),
+    subdir: str | None = Form(None, description="downloads: optional subfolder."),
+    filename: str | None = Form(None, description="Override the delivered filename."),
+):
+    job = jobs.STORE.get(job_id)
+    if job is None:
+        raise HTTPException(404, "no such job")
+    if job.state is not jobs.State.SUCCEEDED:
+        raise HTTPException(409, f"job is {job.state.value}, not succeeded")
+    src = _artifact_path(job, artifact)
+    try:
+        if destination == "downloads":
+            return delivery.to_downloads(src, filename or artifact, subdir)
+        if destination == "minio":
+            if not (bucket and key):
+                raise HTTPException(400, "minio delivery needs both bucket and key")
+            return delivery.to_minio(src, bucket, key)
+        raise HTTPException(400, f'unknown destination {destination!r}; expected "downloads" or "minio"')
+    except delivery.DeliveryError as exc:
+        raise HTTPException(503, str(exc))
