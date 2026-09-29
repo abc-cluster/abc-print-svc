@@ -187,17 +187,33 @@ curl -s localhost:8080/jobs/$JOB | jq '.manifest.fonts.substituted'
 
 An empty list means the licensed fonts were mounted and resolved.
 
-## 6. Examination copy vs submission copy
+## 6. Examination, submission and library copies
 
-They are two variants of one profile, and the difference is not cosmetic:
+They are three variants of one profile, and the differences are not cosmetic:
 
 ```bash
--F "copy=examination"   # default: no branded title frame, no Afrikaans Opsomming
--F "copy=submission"    # adds both
+-F "copy=examination"   # default: no Afrikaans Opsomming, no branded title frame
+-F "copy=submission"    # adds the Opsomming
+-F "copy=library"       # adds the Opsomming and the branded title frame
 ```
 
-On the reference thesis that is 230 pages versus 231. If your faculty measures
-length in pages, build the copy you will actually submit before measuring.
+Two rules are worth knowing, because both were learned the hard way on the
+reference thesis.
+
+**The branded title frame belongs to the deposit alone.** The conferred exemplars
+that appear to show it on every copy are deposit copies — which is the distinction
+that an earlier reading of them missed. Examiners get an unbranded document.
+
+**The Opsomming ships only once it is written.** Asking for a submission or library
+copy does not put an empty or placeholder page in the front matter: the pipeline
+reads the Afrikaans section and withholds the page while it still carries a
+`FIXME`/`TODO`/`XXX`, using the same marker set the `C1` check uses, so the build
+and the verification cannot drift apart. The build log says when it withholds, and
+the page appears by itself once the translation is written.
+
+On the reference thesis the Opsomming page is the difference between 229 pages and
+230. If your faculty measures length in pages, build the copy you will actually
+submit before measuring.
 
 ## 7. Confirm a rebuild is the same document
 

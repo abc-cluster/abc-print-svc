@@ -81,15 +81,26 @@ def run_quarto(paths: dict, prof: profiles.Profile, *, formats: list[str],
 def run(paths: dict, chapters: list[str] | None, copy: str = "examination",
         run_checks: bool = True) -> dict:
     """Invoke thesis-assemble.sh and return artefacts, checks and a manifest."""
+    # Three copies of one profile, differing only in front matter. The examination copy
+    # carries neither the Afrikaans Opsomming nor the branded title frame; the submission
+    # copy adds the Opsomming; the branded frame belongs to the library deposit alone.
+    # The pipeline withholds the Opsomming while its source section is still a stub, so
+    # asking for a submission or library copy cannot put a FIXME on a front-matter page.
+    #
+    # Validated before the pipeline is looked for, so a caller who mistypes the copy is
+    # told that rather than that the image has no pipeline vendored into it.
+    flag = {"examination": None, "submission": "--submission", "library": "--library"}
+    if copy not in flag:
+        raise CompileError(
+            f"unknown copy {copy!r}; expected 'examination', 'submission' or 'library'")
+
     script = os.path.join(paths["bin"], "thesis-assemble.sh")
     if not os.path.isfile(script):
         raise CompileError(f"pipeline script missing: {script}")
 
     cmd = ["bash", script]
-    if copy == "submission":
-        cmd.append("--submission")
-    elif copy != "examination":
-        raise CompileError(f"unknown copy {copy!r}; expected 'examination' or 'submission'")
+    if flag[copy]:
+        cmd.append(flag[copy])
     if not run_checks:
         cmd.append("--no-check")
     if chapters:

@@ -331,8 +331,11 @@ async def post_compile(
     chapters: str | None = Form(
         default=None, description='Chapter prefixes to build, comma-separated, e.g. "01,04,07". '
                                   "Omit to build every chapter found."),
-    copy: str = Form("examination", description='"examination" or "submission". The submission copy '
-                                               "adds the branded title frame and the Afrikaans Opsomming."),
+    copy: str = Form("examination", description='"examination", "submission" or "library". The '
+                                               "submission copy adds the Afrikaans Opsomming; the "
+                                               "library deposit adds the branded title frame as well. "
+                                               "The Opsomming is withheld while its source section is "
+                                               "still a stub, so neither copy can ship a placeholder."),
     checks: bool = Form(True, description="Run the verification suite. Leave on: verification is the product."),
 ):
     """Accept a bundle and start a build.

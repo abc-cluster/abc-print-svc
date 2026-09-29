@@ -11,3 +11,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+# The package lives under src/ and the image sets PYTHONPATH=/srv/src, so tests need the
+# same for `pytest` to work in a clone without anyone exporting it first.
+pythonpath = ["src"]
+testpaths = ["tests"]
