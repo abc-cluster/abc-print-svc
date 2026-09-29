@@ -68,6 +68,8 @@ def create(root: str) -> dict:
         "quarto": os.path.join(root, "writeup", "thesis-quarto"),
         "build": os.path.join(root, "writeup", "_build"),
     }
+    paths["bib_dir"] = os.path.join(root, "writeup")
+    paths["bib_per_area_dir"] = paths["thesis"]
     for p in paths.values():
         os.makedirs(p, exist_ok=True)
 
@@ -108,8 +110,15 @@ def write_asset(paths: dict, kind: str, name: str, data: bytes) -> str:
         # references.bib would simply never be picked up — the citations it
         # carries would go missing with nothing but a citeproc warning.
         base = os.path.basename(name or "")
-        target = paths["thesis"] if BIB_PER_AREA.match(base) \
-            else os.path.join(paths["repo"], "writeup")
+        # Where a bibliography belongs is ENGINE-specific: the thesis pipeline
+        # reads writeup/references.bib plus writeup/thesis/_*-refs-*.bib, while
+        # the quarto engine resolves everything relative to the entry document.
+        # Hard-coding the thesis layout put references.bib somewhere the quarto
+        # render could not see it, and the failure surfaced only as a lua
+        # traceback from inside a citation filter.
+        main_dir = paths.get("bib_dir") or os.path.join(paths["repo"], "writeup")
+        per_area_dir = paths.get("bib_per_area_dir") or paths["thesis"]
+        target = per_area_dir if BIB_PER_AREA.match(base) else main_dir
     os.makedirs(target, exist_ok=True)
     # Figures may be referenced through a SUBPATH — the thesis has e.g.
     # figures/F6.2-metro-src/F6.2-metro-v4.typst.svg — so flattening to a
@@ -135,3 +144,46 @@ def detected_chapters(paths: dict) -> list[str]:
         if m and m.group(1) not in seen:
             seen.append(m.group(1))
     return seen
+
+
+def create_quarto(root: str, profile_dir: str) -> dict:
+    """Workspace for the quarto-render engine.
+
+    Far simpler than the thesis layout, because the engine is: everything the
+    render needs sits beside the entry document, and the profile's vendored
+    extension is copied in so `--to apaquarto-typst` resolves without a network
+    fetch or a client-supplied path.
+    """
+    paths = {
+        "repo": root,
+        "src": os.path.join(root, "src"),
+        # Figures are written RELATIVE TO THE PROJECT ROOT, because a document
+        # references them by its own relative path (the nf-nomad manuscript uses
+        # ../assets/figures/current/...). Forcing them under src/ makes those
+        # references unresolvable.
+        "figures": root,
+        "build": os.path.join(root, "_build"),
+    }
+    # The quarto engine resolves bibliographies relative to the entry document.
+    paths["bib_dir"] = paths["src"]
+    paths["bib_per_area_dir"] = paths["src"]
+    # The quarto engine reads bibliographies and inserts from src/ directly.
+    paths["thesis"] = paths["src"]
+    paths["inserted"] = paths["src"]
+    for p in paths.values():
+        os.makedirs(p, exist_ok=True)
+
+    if not os.path.isdir(profile_dir):
+        raise BundleError(f"profile directory not found: {profile_dir}")
+    for item in os.listdir(profile_dir):
+        if item == "profile.yaml":
+            continue
+        # _extensions goes to the project ROOT (apaquarto emits ../_extensions/…);
+        # everything else the profile ships sits beside the document.
+        dest_base = root if item == "_extensions" else paths["src"]
+        s_, d_ = os.path.join(profile_dir, item), os.path.join(dest_base, item)
+        if os.path.isdir(s_):
+            shutil.copytree(s_, d_, dirs_exist_ok=True)
+        else:
+            shutil.copy2(s_, d_)
+    return paths

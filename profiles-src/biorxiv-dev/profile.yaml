@@ -1,0 +1,69 @@
+# biorxiv-dev — internal development PDFs of a manuscript.
+#
+# NOT a submission profile. The bundle this was derived from says so itself:
+# "a versioned build, not a submission". A future biorxiv-submission@… would add
+# the preprint server's actual requirements; this one must not pretend to be it.
+#
+# Derived from the nf-nomad manuscript path:
+#   quarto render src/index.qmd --to apaquarto-typst   (and apaquarto-docx)
+schema_version: 1
+name: biorxiv-dev
+version: "0.1"
+description: >-
+  Internal development PDFs of a manuscript, via apaquarto. No compliance surface
+  by design; hygiene checks only. Not a submission profile.
+
+# A profile SELECTS an engine. The thesis engine's measure/reserve/splice passes
+# exist to serve inserted papers and a faculty front matter, and a preprint has
+# neither.
+engine: quarto-render
+
+template:
+  # Third-party (W. Joel Schneider), vendored and pinned. An apaquarto release can
+  # move pagination exactly as a font change does, so it is pinned and recorded in
+  # the manifest rather than tracked.
+  extension: apaquarto@5.0.1
+  formats:
+    pdf: apaquarto-typst
+    docx: apaquarto-docx
+
+page:
+  size: letter
+
+fonts:
+  body: { stack: ["Monaspace Argon", "DejaVu Sans Mono"] }
+  # The source bundle sets Monaspace Argon for main, sans AND mono — "Monaspace
+  # Argon throughout". Code blocks still come out in DejaVu Sans Mono, because
+  # apaquarto sets those through its own raw-block rule rather than via monofont.
+  mono: { stack: ["Monaspace Argon", "DejaVu Sans Mono"] }
+  # `warn`, not `fail`, and the reason is specific rather than lazy: nothing in a
+  # dev PDF is measured in pages. The thesis profile keeps `fail` because its
+  # length rule is. Note the size of the effect either way — this project's own
+  # August notes record Monaspace Argon setting the same text at 28 pp rather
+  # than 21 pp, a 33% swing from one font key.
+  on_substitution: warn
+
+bibliography:
+  style: apa
+  consolidated: true
+
+layout:
+  floats_in_text: true
+  numbered_lines: true
+
+# No compliance surface. Jobs under this profile report `compliant: null`, not
+# `true` — a profile with no rules must not claim compliance.
+rules: {}
+
+checks:
+  fail_on: [unresolved_refs, missing_figures]
+  warn_on: [dangling_links]
+
+# What a build may override. Everything else is the profile's.
+open_to_build:
+  - document
+  - fonts.body.stack
+  - layout.floats_in_text
+  - layout.numbered_lines
+  - outputs
+  - quarto_metadata

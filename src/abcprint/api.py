@@ -23,7 +23,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Form, Backg
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import compile as compiler, delivery, equivalence, fonts, jobs, toolchain, workspace
+from . import compile as compiler, delivery, equivalence, fonts, jobs, profile as profiles, toolchain, workspace
 from .models import Equivalence, FontHealth, Health, Toolchain as ToolchainModel
 
 REQUIRED_FONTS = ["Calibri", "Cambria", "Georgia", "Times New Roman", "Arial", "Helvetica Neue"]
@@ -217,6 +217,33 @@ async def post_equivalence(
 
 # ── compile ─────────────────────────────────────────────────────────────────
 
+def _run_job_quarto(job_id: str, root: str, profile_ref: str, formats: list,
+                    user_metadata: dict, entry: str) -> None:
+    job = jobs.STORE.get(job_id)
+    if job is None:
+        return
+    job.state, job.started = jobs.State.RUNNING, __import__("time").time()
+    try:
+        prof = profiles.load(profile_ref)
+        paths = {"repo": root, "src": os.path.join(root, "src"),
+                 "figures": os.path.join(root, "src", "figures"),
+                 "build": os.path.join(root, "_build")}
+        result = compiler.run_quarto(paths, prof, formats=formats,
+                                     user_metadata=user_metadata, entry=entry)
+        job.artifacts = result["artifacts"]
+        job.compliant = result.get("compliant")
+        job.manifest = result["manifest"]
+        job.checks = result["checks"]
+        job.log_tail = result["log_tail"]
+        job.state = jobs.State.SUCCEEDED
+    except Exception as exc:
+        job.error = str(exc)
+        job.log_tail = getattr(exc, "log_tail", []) or []
+        job.state = jobs.State.FAILED
+    finally:
+        job.finished = __import__("time").time()
+
+
 def _run_job(job_id: str, root: str, chapters, copy: str, run_checks: bool) -> None:
     """Background worker. Failures are recorded on the job, never swallowed."""
     job = jobs.STORE.get(job_id)
@@ -341,7 +368,11 @@ def _artifact_path(job, name: str) -> str:
     known = {a["name"] for a in job.artifacts}
     if name not in known:
         raise HTTPException(404, f"no such artefact; this job produced {sorted(known)}")
+    # The two engines lay out their workspaces differently; take whichever
+    # build directory this job actually produced.
     build = os.path.join(job.workdir, "writeup", "_build")
+    if not os.path.isdir(build):
+        build = os.path.join(job.workdir, "_build")
     path = os.path.abspath(os.path.join(build, os.path.basename(name)))
     if os.path.commonpath([os.path.abspath(build), path]) != os.path.abspath(build) \
             or not os.path.isfile(path):
@@ -394,3 +425,95 @@ def deliver(
         raise HTTPException(400, f'unknown destination {destination!r}; expected "downloads" or "minio"')
     except delivery.DeliveryError as exc:
         raise HTTPException(503, str(exc))
+
+
+# ── profiles ────────────────────────────────────────────────────────────────
+
+@app.get("/profiles", tags=["compile"], summary="Profiles this deployment offers")
+def list_profiles():
+    """A profile selects an ENGINE and configures it.
+
+    `has_compliance_rules: false` means jobs under that profile report
+    `compliant: null` — a profile with nothing to check must not claim compliance.
+    """
+    out = []
+    for name in profiles.available():
+        try:
+            out.append(profiles.load(name).as_dict())
+        except profiles.ProfileError as exc:
+            out.append({"name": name, "error": str(exc)})
+    return {"profiles": out,
+            "refused_quarto_metadata_keys": profiles.REFUSED_METADATA}
+
+
+@app.post("/compile/manuscript", tags=["compile"], status_code=202,
+          summary="Compile a manuscript (quarto-render engine)",
+          responses={202: {"description": "Accepted. Poll `/jobs/{id}`."},
+                     400: {"description": "Bundle or quarto_metadata rejected; the message names why."}})
+async def post_compile_manuscript(
+    background: BackgroundTasks,
+    sources: list[UploadFile] = File(
+        ..., description="The entry `.qmd` plus any included files."),
+    figures: list[UploadFile] = File(default=[], description="Figures, subpaths preserved."),
+    bibliography: list[UploadFile] = File(default=[], description="BibTeX files."),
+    profile: str = Form("biorxiv-dev", description="Profile reference, e.g. `biorxiv-dev@0.1`."),
+    entry: str = Form("index.qmd", description="The document to render."),
+    outputs: str = Form("pdf", description="Comma-separated: pdf, docx."),
+    quarto_metadata: str | None = Form(
+        default=None,
+        description=(
+            "ADVANCED. A YAML mapping merged into the `_metadata.yml` the render sees, "
+            "after the profile's own keys, so it genuinely overrides. Keys that execute "
+            "code or read a client-chosen path are refused by name — see "
+            "`refused_quarto_metadata_keys` on GET /profiles. The effective metadata is "
+            "returned in the job manifest, so what was merged is never a guess.")),
+):
+    """Render a manuscript with the quarto-render engine.
+
+    Separate from `/compile` because it is a different engine, not a different
+    option: there is no measure pass, no page reservation and no splice here.
+    """
+    try:
+        prof = profiles.load(profile)
+    except profiles.ProfileError as exc:
+        raise HTTPException(400, str(exc))
+    if prof.engine != "quarto-render":
+        raise HTTPException(
+            400, f"profile {prof.ref} uses the {prof.engine!r} engine; "
+                 f"use POST /compile for that one")
+
+    meta: dict = {}
+    if quarto_metadata:
+        try:
+            import yaml as _yaml
+            meta = _yaml.safe_load(quarto_metadata) or {}
+        except Exception as exc:
+            raise HTTPException(400, f"quarto_metadata is not valid YAML: {exc}")
+        if not isinstance(meta, dict):
+            raise HTTPException(400, "quarto_metadata must be a YAML mapping")
+        refused = profiles.check_quarto_metadata(meta)
+        if refused:
+            # Refused up front rather than at render time: the user gets the reason
+            # in milliseconds instead of after a build.
+            raise HTTPException(400, "quarto_metadata rejected: " + "; ".join(refused))
+
+    formats = [f.strip() for f in outputs.split(",") if f.strip()]
+    root = _tempfile.mkdtemp(prefix="abcprint-ms-")
+    try:
+        paths = workspace.create_quarto(root, profiles._resolve_dir(profile))
+        for up in sources:
+            workspace.write_source(paths, up.filename, await up.read())
+        for up in figures:
+            workspace.write_asset(paths, "figure", up.filename, await up.read())
+        for up in bibliography:
+            workspace.write_asset(paths, "bib", up.filename or "references.bib", await up.read())
+    except workspace.BundleError as exc:
+        _shutil.rmtree(root, ignore_errors=True)
+        raise HTTPException(400, str(exc))
+
+    job = jobs.STORE.create({"profile": prof.ref, "engine": prof.engine,
+                             "entry": entry, "outputs": formats,
+                             "quarto_metadata_keys": sorted(meta)})
+    job.workdir = root
+    background.add_task(_run_job_quarto, job.id, root, profile, formats, meta, entry)
+    return JSONResponse(job.as_dict(), status_code=202)

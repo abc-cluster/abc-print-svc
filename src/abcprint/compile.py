@@ -14,7 +14,8 @@ import os
 import subprocess
 import time
 
-from . import fonts, toolchain
+from . import fonts, profile as profiles, toolchain
+from .engines import quarto_render
 
 # Fixed epoch so a rebuild of the same bundle carries the same timestamps. Any
 # constant does; this one is arbitrary and stable.
@@ -38,6 +39,43 @@ def _env(paths: dict) -> dict:
         "HOME": paths["repo"],
     })
     return env
+
+
+def run_quarto(paths: dict, prof: profiles.Profile, *, formats: list[str],
+               user_metadata: dict | None = None, entry: str = "index.qmd") -> dict:
+    """The quarto-render engine, wrapped to the same result shape as the thesis one.
+
+    `compliant` is None rather than True when the profile defines no compliance
+    rules: a profile with nothing to check must not claim compliance.
+    """
+    res = quarto_render.run(paths, prof, formats=formats,
+                            user_metadata=user_metadata, entry=entry)
+    tc = toolchain.detect()
+    fh = fonts.health(
+        [ (((prof.fonts or {}).get(r) or {}).get("stack") or [None])[0]
+          for r in ("body", "sans", "mono") ],
+        [p for p in os.environ.get("ABCPRINT_FONT_PATHS", "").split(os.pathsep) if p] or None)
+    return {
+        "artifacts": res["artifacts"],
+        "compliant": True if prof.has_compliance_rules else None,
+        "return_code": 0,
+        "checks": {"passed": 0, "failed": 0, "warnings": 0, "failures": [],
+                   "warning_detail": [],
+                   "all_clear": None,
+                   "note": "this profile defines no compliance rules"}
+        if not prof.has_compliance_rules else {},
+        "manifest": {
+            "toolchain": tc.as_dict(), "typst_mismatch": tc.typst_mismatch,
+            "profile": prof.as_dict(),
+            "template": prof.template,
+            "effective_quarto_metadata": res["effective_metadata"],
+            "fonts": {"resolutions": fh["resolutions"], "substituted": fh["substituted"]},
+            "source_date_epoch": EPOCH,
+            "outputs": formats,
+            "build_seconds": res["build_seconds"],
+        },
+        "log_tail": res["log_tail"],
+    }
 
 
 def run(paths: dict, chapters: list[str] | None, copy: str = "examination",

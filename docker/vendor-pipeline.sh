@@ -33,5 +33,15 @@ rsync -a --delete \
 # entirely, with no error anywhere.
 python3 "$ROOT/docker/patch-profile-fonts.py" "$ROOT/profiles/su-fmhs"
 
+# Profiles authored in this repo (biorxiv-dev and any future one) are copied in
+# alongside the vendored SU/FMHS profile, so /srv/profiles holds the registry.
+if [ -d "$ROOT/profiles-src" ]; then
+  for d in "$ROOT"/profiles-src/*/; do
+    [ -d "$d" ] || continue
+    rsync -a --delete "$d" "$ROOT/profiles/$(basename "$d")"/
+    echo "vendored profile $(basename "$d")"
+  done
+fi
+
 echo "vendored $(find "$ROOT/pipeline" -type f | wc -l | tr -d ' ') pipeline files"
 echo "vendored $(find "$ROOT/profiles/su-fmhs" -type f | wc -l | tr -d ' ') profile files ($(du -sh "$ROOT/profiles/su-fmhs" | cut -f1))"

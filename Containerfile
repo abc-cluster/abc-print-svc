@@ -77,6 +77,10 @@ RUN mkdir -p /usr/local/share/fonts/ofl/gelasio /usr/local/share/fonts/ofl/jetbr
       "https://github.com/google/fonts/raw/main/ofl/gelasio/Gelasio%5Bwght%5D.ttf" \
  && curl -fsSL -o /usr/local/share/fonts/ofl/gelasio/Gelasio-Italic.ttf \
       "https://github.com/google/fonts/raw/main/ofl/gelasio/Gelasio-Italic%5Bwght%5D.ttf" \
+ && curl -fsSL -o /tmp/monaspace.zip \
+      "https://github.com/githubnext/monaspace/releases/download/v1.101/monaspace-v1.101.zip" \
+ && unzip -q -o -j /tmp/monaspace.zip '*/otf/*.otf' -d /usr/local/share/fonts/ofl/monaspace \
+ && rm -f /tmp/monaspace.zip \
  && curl -fsSL -o /tmp/jbm.zip \
       "https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip" \
  && unzip -q -o -j /tmp/jbm.zip 'fonts/ttf/*' -d /usr/local/share/fonts/ofl/jetbrains \
@@ -84,7 +88,7 @@ RUN mkdir -p /usr/local/share/fonts/ofl/gelasio /usr/local/share/fonts/ofl/jetbr
  && fc-cache -f \
  # Prove the families the profile depends on are actually resolvable, rather
  # than trusting that the files landed.
- && for fam in Carlito Caladea Gelasio Tinos Arimo "JetBrains Mono"; do \
+ && for fam in Carlito Caladea Gelasio Tinos Arimo "JetBrains Mono" "Monaspace Argon"; do \
       fc-list : family | tr ',' '\n' | grep -qxF "$fam" \
         || { echo "FATAL: font family '$fam' did not install"; exit 1; }; \
     done \
@@ -126,6 +130,7 @@ ENV PYTHONPATH=/srv/src \
     ABCPRINT_FONT_PATHS=/usr/local/share/fonts/licensed:/usr/local/share/fonts/ofl \
     ABCPRINT_PIPELINE=/srv/pipeline \
     ABCPRINT_PROFILE=/srv/profiles/su-fmhs \
+    ABCPRINT_PROFILES=/srv/profiles \
     ABCPRINT_DOWNLOADS=/srv/downloads
 
 # Render unprivileged: arbitrary markdown is arbitrary input, and the service
