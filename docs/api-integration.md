@@ -159,6 +159,26 @@ name** so new drift still fails.
 > validating on a small sample gives the wrong answer. And `/ID[0]` looks like a
 > content fingerprint but is shared by a 230-page thesis and a one-chapter subset.
 
+## 8a. The manifest names the rulebook, not just the tools
+
+`manifest.pipeline` records which revision of the verification pipeline checked a
+document:
+
+```bash
+curl -s localhost:8080/jobs/$JOB | jq .manifest.pipeline
+```
+
+This matters because the pipeline lives in a **separate repository** and changes
+independently of the service. On 2026-10-07 check `C1` broadened to catch the
+renderer's own scaffold markers, after five unresolved citation markers reached a
+chapter with every check reporting clear. A document built before that day and
+one built after were verified against **different rules**, and a manifest naming
+only tool versions could not show it.
+
+Record `manifest.pipeline.revision` alongside the artefact. `uncommitted_changes:
+true` means the image was built from a working tree with local edits, so the
+revision alone does not identify what ran.
+
 ## 9. Fonts change page counts
 
 Not cosmetic. Measured on the same sources:

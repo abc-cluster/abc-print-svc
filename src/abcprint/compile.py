@@ -66,6 +66,7 @@ def run_quarto(paths: dict, prof: profiles.Profile, *, formats: list[str],
         if not prof.has_compliance_rules else {},
         "manifest": {
             "toolchain": tc.as_dict(), "typst_mismatch": tc.typst_mismatch,
+            "pipeline": toolchain.pipeline_provenance(),
             "profile": prof.as_dict(),
             "template": prof.template,
             "effective_quarto_metadata": res["effective_metadata"],
@@ -154,6 +155,8 @@ def run(paths: dict, chapters: list[str] | None, copy: str = "examination",
             # is a meaningful claim rather than a hope.
             "toolchain": tc.as_dict(),
             "typst_mismatch": tc.typst_mismatch,
+            # Which rulebook verified this document, not just which tools built it.
+            "pipeline": toolchain.pipeline_provenance(),
             "fonts": {"resolutions": fh["resolutions"], "substituted": fh["substituted"]},
             "source_date_epoch": EPOCH,
             "copy": copy,

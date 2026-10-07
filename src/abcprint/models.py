@@ -31,6 +31,12 @@ class Toolchain(BaseModel):
         description=("True when a standalone typst shadows the bundled one at a different version. "
                      "Not an error — the bundled one still renders — but it misleads anyone "
                      "debugging pagination."))
+    pipeline: dict = Field(
+        default_factory=dict,
+        description=("Revision of the vendored thesis pipeline and profile — the RULEBOOK that "
+                     "verified a document, as opposed to the tools that built it. The pipeline "
+                     "lives in another repository and changes independently, so two documents "
+                     "built a week apart can be checked against different rules."))
 
     model_config = {"json_schema_extra": {"example": {
         "quarto": "1.7.31", "typst_bundled": "0.13.0", "typst_path": "",

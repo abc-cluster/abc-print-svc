@@ -19,7 +19,7 @@ compilation service can render a manuscript end to end, and to give anyone
 writing a client something to submit that does not depend on a private
 repository.
 
-Nothing here is a finding. The subject — sorting small coloured blocks — was
+Nothing here is a finding. The subject, sorting small coloured blocks, was
 chosen because it is obviously not research, so no sentence in this document can
 be mistaken for a claim about the world [@example2020placeholder].
 

@@ -43,7 +43,28 @@ if [ -d "$BIN_SRC" ] && [ -d "$PROFILE_SRC" ]; then
   # the end of the stack and renders in its own default — a different font
   # entirely, with no error anywhere.
   python3 "$ROOT/docker/patch-profile-fonts.py" "$ROOT/profiles/su-fmhs"
-  echo "vendored $(find "$ROOT/pipeline" -type f | wc -l | tr -d ' ') pipeline files (thesis engine enabled)"
+
+  # Record WHICH revision was vendored. The pipeline and the profile live in
+  # another repository and change independently of this one — on 2026-10-07 a
+  # check broadened under us, so a document built before and after that day was
+  # verified against different rules. Without this the manifest can name every
+  # tool version and still not say which rulebook ran, which makes "a rebuild is
+  # a claim" weaker than it sounds.
+  rev="$(git -C "$SRC_REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+  when="$(git -C "$SRC_REPO" log -1 --format=%cI 2>/dev/null || echo unknown)"
+  dirty="false"; [ -n "$(git -C "$SRC_REPO" status --porcelain -- writeup/bin writeup/thesis-quarto 2>/dev/null)" ] && dirty="true"
+  cat > "$ROOT/pipeline/PROVENANCE.json" <<JSON
+{
+  "source": "thesis pipeline (separate repository)",
+  "revision": "$rev",
+  "revision_date": "$when",
+  "uncommitted_changes": $dirty,
+  "vendored_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "files": $(find "$ROOT/pipeline" -type f ! -name PROVENANCE.json | wc -l | tr -d ' ')
+}
+JSON
+  cp "$ROOT/pipeline/PROVENANCE.json" "$ROOT/profiles/su-fmhs/PROVENANCE.json"
+  echo "vendored $(find "$ROOT/pipeline" -type f | wc -l | tr -d ' ') pipeline files (thesis engine enabled, rev $rev${dirty:+, dirty=$dirty})"
 else
   # A placeholder keeps `COPY pipeline/` valid; the service detects the absence
   # and reports thesis-assemble as unavailable rather than failing a job later.

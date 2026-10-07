@@ -18,6 +18,7 @@ output. Two findings from measuring the real pipeline shape this module:
 from __future__ import annotations
 
 import inspect
+import os
 import re
 import shutil
 import subprocess
@@ -76,6 +77,25 @@ class Toolchain:
                 "name tree and silently dangles every internal link."
             )
         return out
+
+
+def pipeline_provenance() -> dict:
+    """Which revision of the vendored pipeline and profile is in this image.
+
+    The pipeline lives in another repository and changes independently. When a
+    check broadens, two documents built a week apart are verified against
+    different rules, and a manifest naming only tool versions cannot show that.
+    Absent file means an image built without the thesis engine.
+    """
+    import json
+    path = os.path.join(os.environ.get("ABCPRINT_PIPELINE", "/srv/pipeline"),
+                        "PROVENANCE.json")
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {"revision": "not-vendored",
+                "note": "this image was built without the thesis pipeline"}
 
 
 def detect() -> Toolchain:

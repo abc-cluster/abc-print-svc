@@ -126,6 +126,11 @@ curl -s -X POST http://localhost:8080/compile \
   -F "copy=examination" -F "checks=true" | jq
 ```
 
+Four warnings are also expected and are the fixture being small rather than
+wrong: `L2` (too few citations to sample), `G2` (sparse pages in a two-page
+chapter), `P1` (no appendices), and `C2` (an em dash in the template's own
+placeholder abstract, which a fixture does not override).
+
 **Expect `compliant: false`, with `L3` failing.** That is the fixture being
 honest rather than broken: `L3` requires **at least 50 DOIs** in the reference
 list, a threshold hardcoded for a complete thesis (the real one has 154). A

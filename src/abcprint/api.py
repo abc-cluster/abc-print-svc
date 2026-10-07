@@ -199,7 +199,8 @@ def get_toolchain():
     pinning a standalone typst pins a binary nothing reads.
     """
     tc = toolchain.detect()
-    return {**tc.as_dict(), "typst_mismatch": tc.typst_mismatch}
+    return {**tc.as_dict(), "typst_mismatch": tc.typst_mismatch,
+            "pipeline": toolchain.pipeline_provenance()}
 
 
 @app.get("/fonts", tags=["health"], response_model=FontHealth,
