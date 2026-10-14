@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import (archive, compile as compiler, delivery, equivalence, fonts, jobs,
+from . import (archive, compile as compiler, delivery, equivalence, fonts, identity, jobs,
                profile as profiles, toolchain, workspace)
 from .models import (DeliveryResult, Equivalence, FontHealth, Health, Job as JobModel,
                      JobList, ProfileList, Toolchain as ToolchainModel)
@@ -367,6 +367,7 @@ async def post_compile(
         for up in bibliography:
             workspace.write_asset(paths, "bib", up.filename or "references.bib", await up.read())
         found = workspace.detected_chapters(paths)
+        ident = _check_identity(paths)
         wanted = [c.strip() for c in chapters.split(",") if c.strip()] if chapters else None
         if wanted:
             missing = [c for c in wanted if c not in found]
@@ -379,7 +380,8 @@ async def post_compile(
         _shutil.rmtree(root, ignore_errors=True)
         raise
 
-    job = jobs.STORE.create({"chapters": wanted or found, "copy": copy, "checks": checks})
+    job = jobs.STORE.create({"chapters": wanted or found, "copy": copy,
+                             "checks": checks, "identity": ident})
     job.workdir = root
     background.add_task(_run_job, job.id, root, wanted, copy, checks)
     return JSONResponse({**job.as_dict(), "detected_chapters": found}, status_code=202)
@@ -529,6 +531,25 @@ def list_profiles():
             "refused_quarto_metadata_keys": profiles.REFUSED_METADATA}
 
 
+def _check_identity(paths: dict) -> dict:
+    """Validate a thesis.yml the caller supplied, before the build starts.
+
+    The pipeline applies the same rules, but it applies them mid-render: the
+    caller would learn about a misspelled key from a job log thirty seconds later.
+    Every field has a template fallback, so a key that is dropped leaves somebody
+    else's details on a title page that otherwise looks right — which is exactly
+    the failure this service exists to make impossible.
+    """
+    fp = os.path.join(paths["thesis"], identity.FILENAME)
+    if not os.path.isfile(fp):
+        return {"source": "template defaults", "keys": []}
+    try:
+        fields = identity.read(fp)
+    except identity.IdentityError as exc:
+        raise HTTPException(400, str(exc))
+    return {"source": identity.FILENAME, "keys": sorted(fields)}
+
+
 async def _archive_thesis(background, bundle, prof, chapters, copy, checks):
     """The thesis arm of /compile/archive.
 
@@ -552,6 +573,7 @@ async def _archive_thesis(background, bundle, prof, chapters, copy, checks):
             _shutil.copyfileobj(bundle.file, fh)
         paths, mapping, manifest = workspace.create_from_archive(root, zpath)
         found = workspace.detected_chapters(paths)
+        ident = _check_identity(paths)
         wanted = [c.strip() for c in chapters.split(",") if c.strip()] if chapters else None
         if wanted:
             missing = [c for c in wanted if c not in found]
@@ -570,6 +592,7 @@ async def _archive_thesis(background, bundle, prof, chapters, copy, checks):
     job = jobs.STORE.create({
         "profile": prof.ref, "engine": prof.engine,
         "chapters": wanted or found, "copy": copy, "checks": checks,
+        "identity": ident,
         "archive": workspace.describe_thesis(manifest, mapping),
     })
     job.workdir = root

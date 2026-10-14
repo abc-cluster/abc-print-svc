@@ -1,0 +1,20 @@
+# The title page's identity.
+#
+# Supply this and the title page is yours. Omit it and the template's own
+# defaults render — which in the published image are ‹unset› placeholders that
+# check C1 FAILS on, deliberately: a document that is wrong about whose it is
+# must not be able to render clean.
+#
+# Keys are a closed set. An unrecognised one is refused by name rather than
+# dropped, because every field has a template fallback: a typo in `supervsor`
+# that got quietly ignored would leave the template's supervisor on the page and
+# the result would look entirely correct.
+author: R. E. Searcher
+degree: Doctor of Philosophy
+department: Department of Invented Examples
+faculty: Faculty of Medicine and Health Sciences
+supervisor: Prof. D. Emonstration
+award-date: March 2027
+papers-published: two
+papers-unpublished: three
+copyright-year: "2026"

@@ -28,16 +28,30 @@ import sys
 # Template parameter DEFAULTS that name real people and places. These are
 # defaults, not machinery — a caller supplies its own — so genericising them
 # removes a name without changing how anything renders.
+#
+# They are ‹guillemet› placeholders rather than plausible stand-ins, and that is
+# the point. The first version used "A. N. Author" / "Department of Fixtures" /
+# "Prof. A Supervisor", which read like a real title page: the service compiled a
+# genuine dissertation, printed those three lines, passed all 22 checks and
+# reported `compliant: true`. A document that is wrong about whose it is must not
+# be able to render clean. In this form check C1 fails on them, because it now
+# treats ‹…› as a scaffold marker the same way it treats FIXME.
+_UNSET = "\u2039{} - unset; supply it in thesis.yml\u203a"
 DEFAULTS = {
-    r'(author:\s*)"[^"]*"': r'\1"A. N. Author"',
-    r'(department:\s*)"[^"]*"': r'\1"Department of Fixtures"',
-    r'(supervisor:\s*)"[^"]*"': r'\1"Prof. A Supervisor"',
+    r'(author:\s*)"[^"]*"': '\\1"' + _UNSET.format("author") + '"',
+    r'(department:\s*)"[^"]*"': '\\1"' + _UNSET.format("department") + '"',
+    r'(supervisor:\s*)"[^"]*"': '\\1"' + _UNSET.format("supervisor") + '"',
     r'(co-supervisor:\s*)"[^"]*"': r'\1""',
 }
 
 # Build-time proof documents. They embed the real front matter and are not used
 # by the service, so they are dropped rather than sanitised.
 DROP = ("dedication-proof.typ", "frontmatter-proof.typ", "dedication-render.typ")
+
+# The one file that DECLARES the parameter defaults. The rules above are written
+# against its `name: "value"` shape, which also occurs in templates that mean
+# something else entirely.
+DEFAULTS_FILE = "typst-template.typ"
 
 # Names that appear outside the parameter defaults — in the extension's own
 # metadata, in a hardcoded default inside a build script, and in a comment that
@@ -89,13 +103,37 @@ def main(profile: str, fixtures: str, pipeline: str = "pipeline") -> int:
             print(f"  dropped {name} (build-time proof, embeds real front matter)")
 
     # 3. Genericise the template's parameter defaults.
-    for typ in prof.rglob("*.typ"):
+    #
+    #    ONLY in the file that declares them. Run over every *.typ, these rules
+    #    also matched typst-show.typ, whose job is the opposite one: it carries
+    #       author: "$for(by-author)$$it.name.literal$$sep$, $endfor$",
+    #    which `(author:\s*)"[^"]*"` matches exactly. The pandoc substitution was
+    #    replaced by the placeholder, so the published image hardcoded "‹author -
+    #    unset›" for every build and silently ignored the author it was given —
+    #    the precise failure the placeholder exists to prevent, introduced by the
+    #    tool meant to prevent it.
+    for typ in prof.rglob(DEFAULTS_FILE):
         text = original = typ.read_text(encoding="utf-8", errors="replace")
         for pat, rep in DEFAULTS.items():
             text = re.sub(pat, rep, text)
         if text != original:
             typ.write_text(text, encoding="utf-8")
             print(f"  genericised parameter defaults in {typ.relative_to(prof)}")
+
+    # 3b. And verify the substitutions this must NOT touch are still intact. A
+    #     template whose parameters no longer reach it fails open: it renders, it
+    #     renders consistently, and it renders the wrong document.
+    for show in prof.rglob("typst-show.typ"):
+        text = show.read_text(encoding="utf-8", errors="replace")
+        broken = [k for k in ("author", "department", "supervisor", "award-date")
+                  if f"$if({k})$" in text and f"${k}$" not in text
+                  and "by-author" not in text.split(f"$if({k})$", 1)[1][:200]]
+        if broken:
+            print(f"sanitise: {show.name} no longer passes {broken} through to the "
+                  f"template; a default-genericising rule has eaten a substitution",
+                  file=sys.stderr)
+            return 1
+        print(f"  verified: {show.relative_to(prof)} still passes its metadata through")
 
     # 4. Substitute remaining names in every text file. The parameter-default
     #    rules above miss the extension's own metadata, a hardcoded author in a

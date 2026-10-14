@@ -125,6 +125,7 @@ chapter references its figures as `figures/F1.1-x.png` — not
 |---|---|---|
 | `src/NN-slug.md` | `writeup/thesis/` | chapters, selected by numeric prefix |
 | `src/<Other>.md` | `writeup/thesis/` | front matter, read by name (`Dedication.md`, `Acknowledgements.md`, `Declaration.md`, `Declaration-of-contribution.md`, `Abbreviations.md`, `Research-outputs.md`, `Prologue.md`) |
+| `src/thesis.yml` | `writeup/thesis/thesis.yml` | the title page's identity — see below |
 | `src/references.bib` | `writeup/references.bib` | the main bibliography |
 | `src/_<area>-refs-<date>.bib` | `writeup/thesis/` | per-area bibliographies, auto-included from there |
 | `assets/figures/current/**` | `writeup/figures/**` | subpaths preserved — a chapter can reference `figures/F6.2-src/F6.2-v4.svg` |
@@ -173,6 +174,47 @@ guess:
 rather than built with: those are the garden template's own words for "not the
 live set". `assets/supplemental-data/` is ignored too — the thesis pipeline reads
 nothing there.
+
+### `src/thesis.yml` puts your name on the title page
+
+Until 2026-10-14 the author, department and supervisor were **defaults inside the
+typst template**, so the published image compiled a real dissertation and printed
+the template's details — and passed every compliance check doing it. They are
+metadata now:
+
+```yaml
+# src/thesis.yml
+author: R. E. Searcher
+degree: Doctor of Philosophy
+department: Department of Invented Examples
+faculty: Faculty of Medicine and Health Sciences
+supervisor: Prof. D. Emonstration
+award-date: March 2027
+papers-published: two          # the counts in the compulsory declaration paragraph
+papers-unpublished: three
+copyright-year: "2026"
+declaration-date: ""           # empty prints no Date line at all
+```
+
+Every key is optional and absent ones fall back to the template. **An
+unrecognised key is refused with a 400 naming it**, which is the opposite of the
+usual "ignore what you don't understand": a fallback exists for every field, so a
+typo in `supervsor` that got dropped would leave the template's supervisor on the
+page and the document would look entirely correct. The job manifest reports what
+was read:
+
+```json
+"identity": {"source": "thesis.yml", "keys": ["author", "department", "supervisor", "..."]}
+```
+
+Omit the file and you get `{"source": "template defaults", "keys": []}` — and in
+the published image those defaults are `‹author - unset; supply it in thesis.yml›`
+placeholders that **check `C1` fails on**. That is deliberate. A document which is
+wrong about whose it is must not be able to render clean.
+
+Values must be single-line, at most 300 characters, and may not contain `"` or
+`\`: the author reaches a typst *string literal* — `set document(author: …)` takes
+a string, not content — and a pandoc template has no way to escape one.
 
 ### Front matter attaches to the chapter carrying the abstracts
 

@@ -1,5 +1,23 @@
 # Introduction
 
+## 0-EN
+
+The template lifts this section out of the body and sets it as the Abstract page,
+which is also what attaches the front matter to this chapter: a build whose
+chapters carry no `0-EN` renders the template's own placeholder pages instead, and
+check C1 fails on them. It is here so the fixture demonstrates a complete front
+matter rather than a half-built one.
+
+Nothing below describes real work. This fixture exists so that the thesis engine
+can be exercised end to end without a private repository: an invented chapter with
+a figure, a table, a cross-reference to each and a citation, which are the
+constructs that have actually broken thesis builds.
+
+## 0-AF
+
+Hierdie is 'n fiktiewe opsomming. Dit bestaan slegs sodat die Afrikaanse bladsy
+gebou kan word; die inskrywingskopie laat dit weg.
+
 This is a fixture chapter. It is not part of any thesis and describes nothing
 real. It exists so that the `thesis-assemble` engine can be exercised without a
 private repository.

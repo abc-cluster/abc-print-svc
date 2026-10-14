@@ -63,6 +63,41 @@ Prologue.md
 `Declaration-of-contribution.md` is the one a hybrid thesis cannot omit: it is
 the declaration of co-author contributions, with the CRediT roles spelled out.
 
+### `thesis.yml` — send this, or the title page is not yours
+
+Send it as another source file. It is what puts your name, department and
+supervisor on the title page:
+
+```yaml
+author: R. E. Searcher
+degree: Doctor of Philosophy
+department: Department of Invented Examples
+faculty: Faculty of Medicine and Health Sciences
+supervisor: Prof. D. Emonstration
+award-date: March 2027
+papers-published: two          # the counts in the compulsory declaration paragraph
+papers-unpublished: three
+copyright-year: "2026"
+```
+
+```bash
+  -F "sources=@writeup/thesis/thesis.yml" \
+```
+
+These were template defaults until 2026-10-14, which meant the service compiled
+real dissertations with somebody else's details on the front and reported
+`compliant: true`. Keys are a **closed set** — an unrecognised one is a 400 naming
+it, because every field has a template fallback and a dropped key leaves that
+fallback on the page looking correct. Omit the file entirely and the published
+image renders `‹author - unset; supply it in thesis.yml›`, which check `C1`
+**fails** on by design.
+
+Read `identity` in the job manifest to see what the build actually used:
+
+```json
+"identity": {"source": "thesis.yml", "keys": ["author", "award-date", "..."]}
+```
+
 ## 2. Submit the build
 
 ```bash
