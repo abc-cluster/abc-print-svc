@@ -529,6 +529,54 @@ def list_profiles():
             "refused_quarto_metadata_keys": profiles.REFUSED_METADATA}
 
 
+async def _archive_thesis(background, bundle, prof, chapters, copy, checks):
+    """The thesis arm of /compile/archive.
+
+    Separate from the quarto arm because the two do opposite things with the
+    archive: quarto PRESERVES its layout, the thesis pipeline needs it MAPPED
+    into the fixed locations under writeup/. The mapping is reported in the job
+    manifest so where each file landed is never a guess.
+    """
+    if not _engines_available()["thesis-assemble"]:
+        raise HTTPException(
+            503,
+            "this image was built without the thesis pipeline, so the "
+            "thesis-assemble engine is unavailable. Use a quarto-render profile, "
+            "or rebuild with the pipeline vendored (see docs/building.md).")
+
+    upload_dir = _tempfile.mkdtemp(prefix="abcprint-zip-")
+    zpath = os.path.join(upload_dir, "_upload.zip")
+    root = _tempfile.mkdtemp(prefix="abcprint-job-")
+    try:
+        with open(zpath, "wb") as fh:
+            _shutil.copyfileobj(bundle.file, fh)
+        paths, mapping, manifest = workspace.create_from_archive(root, zpath)
+        found = workspace.detected_chapters(paths)
+        wanted = [c.strip() for c in chapters.split(",") if c.strip()] if chapters else None
+        if wanted:
+            missing = [c for c in wanted if c not in found]
+            if missing:
+                raise HTTPException(
+                    400, f"requested chapters not in the archive: {missing}; found {found}")
+    except (archive.ArchiveError, workspace.BundleError) as exc:
+        _shutil.rmtree(root, ignore_errors=True)
+        raise HTTPException(400, str(exc))
+    except HTTPException:
+        _shutil.rmtree(root, ignore_errors=True)
+        raise
+    finally:
+        _shutil.rmtree(upload_dir, ignore_errors=True)
+
+    job = jobs.STORE.create({
+        "profile": prof.ref, "engine": prof.engine,
+        "chapters": wanted or found, "copy": copy, "checks": checks,
+        "archive": workspace.describe_thesis(manifest, mapping),
+    })
+    job.workdir = root
+    background.add_task(_run_job, job.id, root, wanted, copy, checks)
+    return JSONResponse({**job.as_dict(), "detected_chapters": found}, status_code=202)
+
+
 @app.post("/compile/archive", tags=["compile"], status_code=202,
           summary="Compile from a zip archive (project-garden layout)",
           responses={202: {"description": "Accepted. Poll `/jobs/{id}`."},
@@ -545,6 +593,15 @@ async def post_compile_archive(
     outputs: str = Form("pdf", description="Comma-separated: pdf, docx."),
     quarto_metadata: str | None = Form(
         default=None, description="ADVANCED. Same escape hatch as /compile/manuscript."),
+    chapters: str | None = Form(
+        default=None,
+        description=("thesis-assemble only. Chapter prefixes to build, comma-separated, "
+                     'e.g. "01,04,07". Omit to build every chapter in the archive.')),
+    copy: str = Form(
+        "examination",
+        description='thesis-assemble only. "examination", "submission" or "library".'),
+    checks: bool = Form(
+        True, description="thesis-assemble only. Run the verification suite."),
 ):
     """Submit a whole manuscript directory as one zip.
 
@@ -563,13 +620,33 @@ async def post_compile_archive(
     and non-regular entries are **refused** rather than skipped, and both entry
     count and expanded size are capped against a decompression bomb. A refusal is
     a 400 naming the offending entry.
+
+    **A `thesis-assemble` profile takes the same archive**, but does the opposite
+    with it: the pipeline reads fixed locations under `writeup/`, so the garden
+    layout is *mapped* rather than preserved —
+
+        src/NN-slug.md            -> writeup/thesis/            (chapters)
+        src/<Other>.md            -> writeup/thesis/            (front matter)
+        src/references.bib        -> writeup/references.bib
+        src/_<area>-refs-<d>.bib  -> writeup/thesis/            (auto-included)
+        assets/figures/current/   -> writeup/figures/           (subpaths kept)
+        assets/inserted-papers/   -> writeup/inserted-papers/
+
+    The job manifest reports where every file landed and which were ignored
+    (`assets/figures/archive/` and `raw/` are the template's own "not current").
+    A `.bib` matching neither accepted name is refused rather than placed
+    somewhere the pipeline never reads. `chapters`, `copy` and `checks` apply on
+    this arm; `entry`, `outputs` and `quarto_metadata` do not.
     """
     try:
         prof = profiles.load(profile)
     except profiles.ProfileError as exc:
         raise HTTPException(400, str(exc))
-    if prof.engine != "quarto-render":
+    if prof.engine not in ("quarto-render", "thesis-assemble"):
         raise HTTPException(400, f"profile {prof.ref} uses the {prof.engine!r} engine")
+
+    if prof.engine == "thesis-assemble":
+        return await _archive_thesis(background, bundle, prof, chapters, copy, checks)
 
     meta: dict = {}
     if quarto_metadata:

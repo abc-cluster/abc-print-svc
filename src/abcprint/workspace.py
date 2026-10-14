@@ -12,6 +12,7 @@ the workspace and anything escaping it is refused.
 from __future__ import annotations
 
 import os
+import posixpath
 import re
 import shutil
 
@@ -275,3 +276,134 @@ def resolve_entry(root: str, manifest: dict, entry: str | None) -> str:
     raise BundleError(
         f"archive contains several .qmd documents and none is src/index.qmd; "
         f"name one with `entry`: {sorted(qmds)}")
+
+
+# --- garden-layout archive → the thesis pipeline's fixed layout -------------
+#
+# The quarto engine PRESERVES an archive's structure, because the document's own
+# relative references are what must keep working. The thesis engine cannot: the
+# pipeline reads fixed locations under writeup/ and a chapter references its
+# figures as `figures/F1.1-x.png`. So here the archive is MAPPED, and the mapping
+# is the contract — which is why every entry is either placed somewhere the
+# pipeline reads, or named in the manifest. Nothing is dropped quietly, because a
+# silently unplaced figure or bibliography surfaces only as a missing image or a
+# vanished citation much later.
+
+# Where a garden project keeps the live assets. `archive/` and `raw/` are the
+# template's own words for "not the current ones", so they are reported rather
+# than built with.
+GARDEN_FIGURES = "assets/figures/"
+GARDEN_FIGURES_CURRENT = "assets/figures/current/"
+GARDEN_NON_CURRENT = ("assets/figures/archive/", "assets/figures/raw/")
+GARDEN_INSERTED = "assets/inserted-papers/"
+GARDEN_SOURCES = "src/"
+
+
+def _placed(mapping: dict, bucket: str, src: str, dest: str) -> None:
+    mapping.setdefault(bucket, []).append({"from": src, "to": dest})
+
+
+def create_from_archive(root: str, zip_path: str) -> tuple[dict, dict, dict]:
+    """Build the thesis pipeline's workspace from a project-garden zip.
+
+    Accepted shape, matching the garden manuscript template:
+
+        src/NN-slug.md            chapters, by numeric prefix
+        src/<Other>.md            front matter
+        src/references.bib        the main bibliography
+        src/_<area>-refs-<d>.bib  per-area bibliographies
+        assets/figures/current/   figures, referenced as figures/… by a chapter
+        assets/inserted-papers/   publisher PDFs spliced in whole
+
+    A `.bib` under src/ that matches neither accepted name is REFUSED: the
+    pipeline reads references.bib plus writeup/thesis/_*-refs-*.bib and nothing
+    else, so placing it anywhere would lose its citations with no error.
+    """
+    from . import archive
+
+    staging = os.path.join(root, "_archive")
+    os.makedirs(staging, exist_ok=True)
+    manifest = archive.extract(zip_path, staging)
+
+    paths = create(root)
+    mapping: dict = {}
+    ignored: list[str] = []
+
+    for rel in manifest["files"]:
+        src_abs = os.path.join(staging, *rel.split("/"))
+        base = posixpath.basename(rel)
+        if base in (".DS_Store", ".gitkeep", "Thumbs.db"):
+            continue
+
+        if rel.startswith(GARDEN_SOURCES):
+            tail = rel[len(GARDEN_SOURCES):]
+            if "/" in tail:
+                # The pipeline reads a FLAT writeup/thesis; a nested source would
+                # never be picked up.
+                raise BundleError(
+                    f"refused {rel!r}: sources must sit directly in src/ "
+                    f"(the thesis pipeline reads a flat chapter directory)")
+            if tail.endswith(".bib"):
+                if tail == "references.bib":
+                    dest = os.path.join(paths["bib_dir"], "references.bib")
+                elif BIB_PER_AREA.match(tail):
+                    dest = _safe_join(paths["bib_per_area_dir"], tail)
+                else:
+                    raise BundleError(
+                        f"refused {rel!r}: a bibliography must be src/references.bib "
+                        f"or src/_<area>-refs-<date>.bib — the pipeline reads no others, "
+                        f"so this one's citations would go missing silently")
+                _placed(mapping, "bibliography", rel, os.path.relpath(dest, root))
+            elif tail.endswith((".md", ".typ", ".tsv", ".txt", ".yml", ".yaml")):
+                dest = _safe_join(paths["thesis"], tail)
+                _placed(mapping, "sources", rel, os.path.relpath(dest, root))
+            else:
+                ignored.append(rel)
+                continue
+
+        elif rel.startswith(GARDEN_INSERTED):
+            tail = rel[len(GARDEN_INSERTED):]
+            dest = _safe_join(paths["inserted"], posixpath.basename(tail))
+            _placed(mapping, "inserted", rel, os.path.relpath(dest, root))
+
+        elif rel.startswith(GARDEN_NON_CURRENT):
+            ignored.append(rel)
+            continue
+
+        elif rel.startswith(GARDEN_FIGURES):
+            # `current/` is the live set; its subpaths are preserved because a
+            # chapter can reference figures/F6.2-metro-src/F6.2-metro-v4.svg.
+            tail = (rel[len(GARDEN_FIGURES_CURRENT):]
+                    if rel.startswith(GARDEN_FIGURES_CURRENT)
+                    else rel[len(GARDEN_FIGURES):])
+            if not tail:
+                continue
+            dest = _safe_join_rel(paths["figures"], tail)
+            _placed(mapping, "figures", rel, os.path.relpath(dest, root))
+
+        else:
+            ignored.append(rel)
+            continue
+
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.move(src_abs, dest)
+
+    shutil.rmtree(staging, ignore_errors=True)
+    if not mapping.get("sources"):
+        raise BundleError(
+            "archive carries no sources under src/; expected src/NN-slug.md chapters")
+    mapping["ignored"] = sorted(ignored)
+    return paths, mapping, manifest
+
+
+def describe_thesis(manifest: dict, mapping: dict) -> dict:
+    """What the archive carried and where each part was placed."""
+    return {
+        "layout": "project-garden",
+        "stripped_prefix": manifest.get("stripped_prefix"),
+        "total_files": len(manifest["files"]),
+        "bytes": manifest["bytes"],
+        "placed": {k: len(v) for k, v in mapping.items() if k != "ignored"},
+        "ignored": mapping.get("ignored", []),
+        "bibliography": [m["to"] for m in mapping.get("bibliography", [])],
+    }

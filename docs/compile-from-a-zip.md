@@ -105,3 +105,84 @@ referenced through `../assets/`:
 cd examples/garden-manuscript-demo && zip -qr /tmp/demo.zip . && cd -
 curl -s -X POST localhost:8080/compile/archive -F "bundle=@/tmp/demo.zip" -F "profile=biorxiv-dev" | jq
 ```
+
+---
+
+## The thesis engine takes the same zip — and maps it
+
+A `thesis-assemble` profile (`su-fmhs`) accepts the same archive on the same
+endpoint, but does the **opposite** thing with it. The quarto arm preserves the
+layout because the document's own relative references are what must keep
+working. The thesis pipeline reads **fixed locations** under `writeup/`, and a
+chapter references its figures as `figures/F1.1-x.png` — not
+`../assets/figures/current/F1.1-x.png`. So here the garden layout is *mapped*:
+
+| in the archive | where it lands | why |
+|---|---|---|
+| `src/NN-slug.md` | `writeup/thesis/` | chapters, selected by numeric prefix |
+| `src/<Other>.md` | `writeup/thesis/` | front matter, read by name (`Dedication.md`, `Acknowledgements.md`, `Declaration.md`, `Declaration-of-contribution.md`, `Abbreviations.md`, `Research-outputs.md`, `Prologue.md`) |
+| `src/references.bib` | `writeup/references.bib` | the main bibliography |
+| `src/_<area>-refs-<date>.bib` | `writeup/thesis/` | per-area bibliographies, auto-included from there |
+| `assets/figures/current/**` | `writeup/figures/**` | subpaths preserved — a chapter can reference `figures/F6.2-src/F6.2-v4.svg` |
+| `assets/inserted-papers/**` | `writeup/inserted-papers/` | publisher PDFs spliced in whole |
+
+```bash
+cd my-thesis            # src/ + assets/ as above
+zip -qr /tmp/thesis.zip .
+
+curl -s -X POST http://localhost:8080/compile/archive \
+  -F "bundle=@/tmp/thesis.zip" \
+  -F "profile=su-fmhs" \
+  -F "copy=examination" \
+  -F "checks=true" | jq .options.archive
+```
+
+`chapters`, `copy` and `checks` apply on this arm, exactly as on `POST /compile`.
+`entry`, `outputs` and `quarto_metadata` do not — the thesis engine builds the
+whole document and emits a PDF.
+
+### Nothing is placed where the pipeline cannot read it
+
+A mapping can fail silently in a way a preserved layout cannot, so two cases are
+**refusals** rather than best-effort placements:
+
+- **A `.bib` named neither `references.bib` nor `_<area>-refs-<date>.bib`.** The
+  pipeline reads those two shapes and nothing else, so any other name would be
+  written somewhere and never opened — losing every citation it carries, with
+  nothing but a citeproc warning to show for it.
+- **A source in a subdirectory of `src/`.** `writeup/thesis` is flat; a nested
+  chapter would simply never be picked up.
+
+And everything that *is* placed is reported, so where a file went is never a
+guess:
+
+```json
+"archive": {
+  "layout": "project-garden",
+  "placed": {"sources": 17, "bibliography": 16, "figures": 15, "inserted": 5},
+  "ignored": ["README.md"],
+  "bibliography": ["writeup/references.bib", "writeup/thesis/_ch01-refs-2026-09-23.bib", "…"]
+}
+```
+
+`assets/figures/archive/` and `assets/figures/raw/` are listed under `ignored`
+rather than built with: those are the garden template's own words for "not the
+live set". `assets/supplemental-data/` is ignored too — the thesis pipeline reads
+nothing there.
+
+### Front matter attaches to the chapter carrying the abstracts
+
+If you build a subset that excludes the introduction (`-F chapters=09`), the
+front-matter pages render the template's placeholders. That is the pipeline's own
+gating — the abstracts live in `01-introduction.md` as `0-EN`/`0-AF` — not a
+mapping failure. A full build picks the pages up from the archive.
+
+### Verified against the multipart path
+
+The zip arm and the multipart `POST /compile` were run on the same document, the
+same image and the same profile, and compared with `POST /equivalence` at 110 DPI
+with **every page rasterised**: equal page count, equal extracted text, 224 of
+224 pages pixel-identical, equal metadata. Submitting a zip is a different way in,
+not a different document.
+
+Try it on a fixture that needs nothing private: `examples/garden-thesis-demo/`.
