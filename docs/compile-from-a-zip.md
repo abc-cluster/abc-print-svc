@@ -21,6 +21,10 @@ This is the garden manuscript layout as it ships. Zipping the `manuscript/`
 folder itself is fine: a single wrapping directory is stripped, and only when
 every entry shares it.
 
+`src/` and `assets/` are never treated as that wrapper. They are layout, not
+packaging, so an archive whose only top-level directory is `src/` — a manuscript
+with no assets — keeps it.
+
 ```bash
 cd writeup/manuscript
 zip -qr /tmp/manuscript.zip .

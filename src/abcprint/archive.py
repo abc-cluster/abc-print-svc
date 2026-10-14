@@ -51,6 +51,17 @@ def _reject(name: str) -> str | None:
     return None
 
 
+# Directories that MEAN something in the layouts this service accepts, and so can
+# never be a wrapper to strip. Without this, an archive whose only top-level
+# directory is `src/` — a manuscript with no assets, which is an ordinary thing to
+# submit — had its `src/` stripped as if it were the folder someone zipped. On the
+# thesis arm every entry then matched no mapped location and the refusal read
+# "archive carries no sources under src/" about an archive that was entirely
+# sources. On the quarto arm it survived only because resolve_entry also accepts a
+# bare index.qmd.
+LAYOUT_DIRS = frozenset({"src", "assets"})
+
+
 def _common_prefix(names: list[str]) -> str:
     """A single wrapping directory, if the whole archive sits inside one.
 
@@ -62,6 +73,10 @@ def _common_prefix(names: list[str]) -> str:
     if len(tops) != 1:
         return ""
     top = tops.pop()
+    # A layout directory is content, not packaging: stripping it discards the very
+    # structure the archive is supposed to be expressing.
+    if top in LAYOUT_DIRS:
+        return ""
     # Only strip when it is genuinely a directory wrapping everything.
     if all(n.replace("\\", "/").startswith(top + "/") for n in names if n.strip()):
         return top

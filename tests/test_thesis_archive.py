@@ -145,3 +145,29 @@ def test_the_manifest_reports_where_things_went(tmp_path, profile):
     assert info["layout"] == "project-garden"
     assert info["placed"] == {"sources": 2, "bibliography": 2, "figures": 2, "inserted": 1}
     assert "writeup/references.bib" in info["bibliography"]
+
+
+def test_a_bare_src_is_not_mistaken_for_a_wrapping_directory(tmp_path, profile):
+    """`src/` is content, not packaging.
+
+    An archive whose only top-level directory is src/ — a manuscript with no
+    assets, which is an ordinary thing to submit — had its src/ stripped as if it
+    were the folder someone zipped. Every entry then matched no mapped location
+    and the refusal read "carries no sources under src/" about an archive that was
+    entirely sources.
+    """
+    entries = {"src/01-introduction.md": "# Introduction\n",
+               "src/references.bib": "@article{a}\n"}
+    paths, mapping, manifest = workspace.create_from_archive(
+        str(tmp_path / "ws"), _zip(tmp_path, entries))
+    assert manifest["stripped_prefix"] is None
+    assert os.path.isfile(os.path.join(paths["thesis"], "01-introduction.md"))
+    assert mapping["ignored"] == []
+
+
+def test_the_bib_refusal_fires_on_a_bare_src_archive(tmp_path, profile):
+    """The refusal that first exposed the stripping bug, as its own guard."""
+    entries = {"src/01-introduction.md": "# Introduction\n", "src/extra.bib": "@a{b}\n"}
+    with pytest.raises(workspace.BundleError) as e:
+        workspace.create_from_archive(str(tmp_path / "ws"), _zip(tmp_path, entries))
+    assert "_<area>-refs-" in str(e.value)
