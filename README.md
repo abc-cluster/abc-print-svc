@@ -30,6 +30,7 @@ protection, or a `/validate` endpoint.
 | [Writing a client / plugin](docs/api-integration.md) | the contract, job lifecycle, error shapes, config sourcing |
 | [Compile a hybrid thesis](docs/compile-a-hybrid-thesis.md) | conventional + published + manuscript chapters |
 | [Compile a manuscript](docs/compile-a-manuscript.md) | the quarto-render engine |
+| [Compile from a zip](docs/compile-from-a-zip.md) | project-garden layout, no plugin needed |
 | [Building and running](docs/building.md) | build from source, CORS, runtime options |
 | [Demo documents](examples/README.md) | fixture content; `./examples/run-demo.sh` verifies a deployment |
 | `/redoc` · `/docs` | live API reference and try-it-out, vendored into the image |
@@ -84,6 +85,7 @@ A profile with no rules reports `compliant: null`, never `true`.
 |---|---|---|
 | POST | `/compile` | Thesis. **202** + job id. |
 | POST | `/compile/manuscript` | Manuscript. **202** + job id. |
+| POST | `/compile/archive` | A zip in project-garden layout. **202** + job id. |
 | GET | `/jobs/{id}` | State, manifest, check report, `compliant`. |
 | GET | `/jobs/{id}/artifacts/{name}` | Download an artefact. |
 | POST | `/jobs/{id}/deliver` | Deliver to `downloads` or `minio`. |

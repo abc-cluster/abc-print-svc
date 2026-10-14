@@ -7,3 +7,4 @@ _out/
 .pytest_cache/
 pipeline/
 profiles/su-fmhs/
+examples/garden-manuscript-demo.zip

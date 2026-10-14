@@ -24,7 +24,8 @@ from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import compile as compiler, delivery, equivalence, fonts, jobs, profile as profiles, toolchain, workspace
+from . import (archive, compile as compiler, delivery, equivalence, fonts, jobs,
+               profile as profiles, toolchain, workspace)
 from .models import (DeliveryResult, Equivalence, FontHealth, Health, Job as JobModel,
                      JobList, ProfileList, Toolchain as ToolchainModel)
 
@@ -526,6 +527,87 @@ def list_profiles():
             out.append({"name": name, "error": str(exc)})
     return {"profiles": out,
             "refused_quarto_metadata_keys": profiles.REFUSED_METADATA}
+
+
+@app.post("/compile/archive", tags=["compile"], status_code=202,
+          summary="Compile from a zip archive (project-garden layout)",
+          responses={202: {"description": "Accepted. Poll `/jobs/{id}`."},
+                     400: {"description": "The archive was refused; the message names why."}})
+async def post_compile_archive(
+    background: BackgroundTasks,
+    bundle: UploadFile = File(
+        ..., description="A .zip of the manuscript directory. Structure is preserved."),
+    profile: str = Form("biorxiv-dev", description="Profile reference, e.g. `biorxiv-dev@0.1`."),
+    entry: str | None = Form(
+        default=None,
+        description=("Document to render, relative to `src/`. Omit to use `src/index.qmd`. "
+                     "If several `.qmd` files exist and none is index.qmd, this is required.")),
+    outputs: str = Form("pdf", description="Comma-separated: pdf, docx."),
+    quarto_metadata: str | None = Form(
+        default=None, description="ADVANCED. Same escape hatch as /compile/manuscript."),
+):
+    """Submit a whole manuscript directory as one zip.
+
+    The expected shape is the **project-garden** manuscript layout, so a project
+    created from that template can be zipped and submitted with no rearranging:
+
+        src/index.qmd  src/_metadata.yml  src/references.bib
+        assets/figures/...   assets/tables/...
+
+    **Structure is preserved, not flattened.** A garden manuscript references its
+    figures as `../assets/figures/current/x.png` from `src/`, and flattening would
+    make every one of those unresolvable. A single wrapping directory — what you
+    get from zipping a folder — is stripped, and only when every entry shares it.
+
+    Archives are extracted under guard: `..` components, absolute paths, symlinks
+    and non-regular entries are **refused** rather than skipped, and both entry
+    count and expanded size are capped against a decompression bomb. A refusal is
+    a 400 naming the offending entry.
+    """
+    try:
+        prof = profiles.load(profile)
+    except profiles.ProfileError as exc:
+        raise HTTPException(400, str(exc))
+    if prof.engine != "quarto-render":
+        raise HTTPException(400, f"profile {prof.ref} uses the {prof.engine!r} engine")
+
+    meta: dict = {}
+    if quarto_metadata:
+        try:
+            import yaml as _yaml
+            meta = _yaml.safe_load(quarto_metadata) or {}
+        except Exception as exc:
+            raise HTTPException(400, f"quarto_metadata is not valid YAML: {exc}")
+        if not isinstance(meta, dict):
+            raise HTTPException(400, "quarto_metadata must be a YAML mapping")
+        refused = profiles.check_quarto_metadata(meta)
+        if refused:
+            raise HTTPException(400, "quarto_metadata rejected: " + "; ".join(refused))
+
+    formats = [f.strip() for f in outputs.split(",") if f.strip()]
+    root = _tempfile.mkdtemp(prefix="abcprint-zip-")
+    zpath = os.path.join(root, "_upload.zip")
+    os.makedirs(root, exist_ok=True)
+    try:
+        with open(zpath, "wb") as fh:
+            _shutil.copyfileobj(bundle.file, fh)
+        work = _tempfile.mkdtemp(prefix="abcprint-ws-")
+        paths, manifest = workspace.create_quarto_from_archive(
+            work, profiles._resolve_dir(profile), zpath)
+        resolved = workspace.resolve_entry(work, manifest, entry)
+    except (archive.ArchiveError, workspace.BundleError) as exc:
+        _shutil.rmtree(root, ignore_errors=True)
+        raise HTTPException(400, str(exc))
+    finally:
+        _shutil.rmtree(root, ignore_errors=True)
+
+    job = jobs.STORE.create({"profile": prof.ref, "engine": prof.engine,
+                             "entry": resolved, "outputs": formats,
+                             "archive": archive.describe(manifest, f"src/{resolved}"),
+                             "quarto_metadata_keys": sorted(meta)})
+    job.workdir = work
+    background.add_task(_run_job_quarto, job.id, work, profile, formats, meta, resolved)
+    return JSONResponse(job.as_dict(), status_code=202)
 
 
 @app.post("/compile/manuscript", tags=["compile"], status_code=202,

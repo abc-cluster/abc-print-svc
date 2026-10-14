@@ -193,3 +193,85 @@ def create_quarto(root: str, profile_dir: str) -> dict:
         else:
             shutil.copy2(s_, d_)
     return paths
+
+
+def create_quarto_from_archive(root: str, profile_dir: str, zip_path: str,
+                               entry: str | None = None) -> tuple[dict, dict]:
+    """Workspace built from a client zip, with the archive's layout PRESERVED.
+
+    The project-garden manuscript keeps sources in src/ and figures in
+    assets/figures/..., and the document references them as
+    ../assets/figures/current/x.png. Flattening would make every one of those
+    unresolvable, so the archive is extracted as-is and the profile is layered
+    around it rather than over it.
+    """
+    from . import archive
+
+    os.makedirs(root, exist_ok=True)
+    manifest = archive.extract(zip_path, root)
+
+    paths = {
+        "repo": root,
+        "src": os.path.join(root, "src"),
+        "figures": os.path.join(root, "src"),
+        "build": os.path.join(root, "_build"),
+    }
+    paths["thesis"] = paths["src"]
+    paths["inserted"] = paths["src"]
+    paths["bib_dir"] = paths["src"]
+    paths["bib_per_area_dir"] = paths["src"]
+    os.makedirs(paths["src"], exist_ok=True)
+    os.makedirs(paths["build"], exist_ok=True)
+
+    if not os.path.isdir(profile_dir):
+        raise BundleError(f"profile directory not found: {profile_dir}")
+    for item in os.listdir(profile_dir):
+        if item == "profile.yaml":
+            continue
+        src_i = os.path.join(profile_dir, item)
+        if item == "_extensions":
+            # Always ours: apaquarto emits ../_extensions/… from the document,
+            # and a client-supplied extension would be executable input.
+            shutil.copytree(src_i, os.path.join(root, item), dirs_exist_ok=True)
+            continue
+        # Everything else the profile ships (the CSL, for instance) sits beside
+        # the document, and only when the bundle did not bring its own.
+        dest_i = os.path.join(paths["src"], item)
+        if os.path.exists(dest_i):
+            continue
+        if os.path.isdir(src_i):
+            shutil.copytree(src_i, dest_i, dirs_exist_ok=True)
+        else:
+            shutil.copy2(src_i, dest_i)
+
+    return paths, manifest
+
+
+def resolve_entry(root: str, manifest: dict, entry: str | None) -> str:
+    """Pick the document to render, relative to src/.
+
+    Explicit wins. Otherwise prefer the garden layout's src/index.qmd, then a
+    bare index.qmd, then a sole .qmd anywhere — and if several are candidates,
+    refuse rather than guess, because rendering the wrong document silently is
+    worse than asking.
+    """
+    files = manifest.get("files", [])
+    if entry:
+        cand = entry if entry.startswith("src/") else f"src/{entry}"
+        if cand in files or os.path.isfile(os.path.join(root, cand)):
+            return os.path.basename(cand) if cand.startswith("src/") else cand
+        raise BundleError(
+            f"entry {entry!r} is not in the archive; it carries: "
+            f"{[f for f in files if f.endswith('.qmd')] or 'no .qmd files'}")
+
+    for preferred in ("src/index.qmd", "index.qmd"):
+        if preferred in files:
+            return "index.qmd" if preferred == "src/index.qmd" else preferred
+    qmds = [f for f in files if f.endswith(".qmd")]
+    if len(qmds) == 1:
+        return qmds[0].split("/", 1)[1] if qmds[0].startswith("src/") else qmds[0]
+    if not qmds:
+        raise BundleError("archive contains no .qmd document")
+    raise BundleError(
+        f"archive contains several .qmd documents and none is src/index.qmd; "
+        f"name one with `entry`: {sorted(qmds)}")
