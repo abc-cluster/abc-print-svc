@@ -1,0 +1,41 @@
+# abc-app.yaml — abc-print-svc
+#
+# Document compilation and compliance verification, deployed as a persistent
+# Nomad service job. See docs/building.md for the runtime environment variables
+# this image understands.
+
+version: "1.0"
+name: abc-print-svc
+project: mbhg-bioinformatics
+framework: custom
+
+# Multi-arch (amd64 + arm64), private to the abc-cluster org. Pinned rather than
+# :latest so a restart cannot silently change the renderer — pagination is
+# load-bearing here, and a quarto bump moves it.
+image: ghcr.io/abc-cluster/abc-print-svc:0.7.0
+
+port: 8080
+# Not "/": /health returns 503 when the deployment cannot build — a missing font
+# set or a pypdf too old to merge. Pointing the probe at "/" would report a
+# service that cannot produce a correct document as healthy.
+health: /health
+
+access: team
+expose: [public]
+
+resources:
+  # A thesis assemble is multi-pass and CPU-bound for ~30 s; the default 500 MHz
+  # would stretch that several-fold. Memory covers quarto + typst holding a
+  # 230-page document plus spliced PDFs.
+  cpu: 2000
+  memory: 4096
+
+env:
+  # Allowed browser origins. A plugin running in an editor is a browser context,
+  # so without this every call is blocked before reaching a handler. Left
+  # permissive because the platform auth-gates the app (access: team) — the
+  # service itself has no authentication of its own.
+  ABCPRINT_CORS_ORIGINS: "*"
+  # Pinned so two builds of one bundle differ only in ways that carry no
+  # document meaning.
+  ABCPRINT_SOURCE_DATE_EPOCH: "1700000000"

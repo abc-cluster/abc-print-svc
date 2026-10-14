@@ -44,6 +44,16 @@ if [ -d "$BIN_SRC" ] && [ -d "$PROFILE_SRC" ]; then
   # entirely, with no error anywhere.
   python3 "$ROOT/docker/patch-profile-fonts.py" "$ROOT/profiles/su-fmhs"
 
+  # Replace the author's own thesis material with fixture content. A profile
+  # carries more than formatting rules: the dedication and acknowledgements
+  # fragments are generated from the author's own words, and the template's
+  # parameter defaults name a real person and supervisor. Shipping those in a
+  # public image publishes private writing, which is what happened on
+  # 2026-10-14. Formatting rules and the statutory wording stay — they are the
+  # rulebook, and the rulebook is the point.
+  python3 "$ROOT/docker/sanitise-profile.py" \
+    "$ROOT/profiles/su-fmhs" "$ROOT/examples/thesis-chapter-demo/frontmatter" "$ROOT/pipeline"
+
   # Record WHICH revision was vendored. The pipeline and the profile live in
   # another repository and change independently of this one — on 2026-10-07 a
   # check broadened under us, so a document built before and after that day was
