@@ -12,7 +12,7 @@ framework: custom
 # Multi-arch (amd64 + arm64), private to the abc-cluster org. Pinned rather than
 # :latest so a restart cannot silently change the renderer — pagination is
 # load-bearing here, and a quarto bump moves it.
-image: ghcr.io/abc-cluster/abc-print-svc:0.12.0
+image: ghcr.io/abc-cluster/abc-print-svc:0.13.0
 
 port: 8080
 # Not "/": /health returns 503 when the deployment cannot build — a missing font
@@ -71,3 +71,14 @@ env:
   # Pinned so two builds of one bundle differ only in ways that carry no
   # document meaning.
   ABCPRINT_SOURCE_DATE_EPOCH: "1700000000"
+  # Two renders, because the allocation has two CPUs. Measured 2026-10-19: the CPU
+  # saturates at two, and admitting eight made every build 6.7x slower for ~20%
+  # more throughput. Past 2 + 8 a submission gets 429 rather than being accepted
+  # and starved. Memory is the harder wall — ~674 MiB per concurrent thesis
+  # render, so 4 GiB is gone at about six, and the old bound was anyio's 40.
+  ABCPRINT_MAX_RENDERS: "2"
+  ABCPRINT_MAX_QUEUED: "8"
+  # A finished job's workspace is reclaimed after this long; artefacts are served
+  # out of it, so it cannot go at the end of the build. Nothing reclaimed it at
+  # all before: four thesis builds left 148 MB behind.
+  ABCPRINT_ARTIFACT_TTL_S: "21600"
