@@ -12,9 +12,17 @@ things had to be true to close it, and only one of them is a lock on the door:
 A shared secret would have satisfied (1) and left (2) exactly as broken.
 """
 import pytest
-from fastapi.testclient import TestClient
 
-from abcprint import auth, jobs
+# The gate is FastAPI-level, so these need the web stack the image carries. Skip
+# rather than error: a bare `pytest tests` on a laptop without it should still run
+# everything else instead of collapsing at collection. Run the full suite with
+#   docker run --rm -v "$PWD/src:/srv/src:ro" -v "$PWD/tests:/srv/tests:ro" \
+#     -w /srv <image> sh -c 'pip install -q --break-system-packages pytest httpx;
+#                            PYTHONPATH=/srv/src python3 -m pytest tests -q'
+pytest.importorskip("fastapi", reason="web stack not installed; run the suite in the image")
+from fastapi.testclient import TestClient            # noqa: E402
+
+from abcprint import auth, jobs                      # noqa: E402
 
 
 @pytest.fixture
