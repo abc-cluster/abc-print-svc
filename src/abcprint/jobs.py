@@ -37,6 +37,11 @@ class Job:
     error: str | None = None
     # A document can be produced AND fail its checks; that is not job failure.
     compliant: bool | None = None
+    # The token label that created this job. Jobs are visible only to their owner:
+    # before this field existed, GET /jobs listed every caller's jobs and every
+    # artifact was fetchable by id, so one caller could download another's
+    # document. A shared secret alone would not have closed that.
+    owner: str = "anonymous"
     workdir: str | None = None
     log_tail: list[str] = field(default_factory=list)
 
@@ -55,8 +60,8 @@ class Store:
         self._limit = limit
         self._lock = threading.Lock()
 
-    def create(self, options: dict) -> Job:
-        job = Job(id=uuid.uuid4().hex[:16], options=options)
+    def create(self, options: dict, owner: str = "anonymous") -> Job:
+        job = Job(id=uuid.uuid4().hex[:16], options=options, owner=owner)
         with self._lock:
             self._jobs[job.id] = job
             self._order.append(job.id)
@@ -64,13 +69,40 @@ class Store:
                 self._jobs.pop(self._order.pop(0), None)
         return job
 
-    def get(self, job_id: str) -> Job | None:
-        return self._jobs.get(job_id)
+    def get(self, job_id: str, owner: str | None = None) -> Job | None:
+        """Fetch a job, optionally restricted to its owner.
 
-    def list(self, limit: int = 50) -> list[Job]:
+        A job belonging to someone else returns None rather than raising, so the
+        caller answers 404 and does not confirm that the id exists. Pass owner=None
+        only from code that is not serving a request — the background runner, which
+        has no principal because it IS the service.
+        """
+        job = self._jobs.get(job_id)
+        if job is None:
+            return None
+        if owner is not None and job.owner != owner:
+            return None
+        return job
+
+    def list(self, limit: int = 50, owner: str | None = None) -> list[Job]:
+        """Most recent jobs, newest first; the owner's own unless owner is None.
+
+        The limit applies AFTER the ownership filter, so a busy neighbour cannot
+        push a caller's own jobs out of their view — which a pre-filter limit would
+        have done silently, and which is exactly the kind of quiet wrong answer
+        this service is meant not to give.
+        """
         with self._lock:
-            ids = self._order[-limit:][::-1]
-        return [self._jobs[i] for i in ids if i in self._jobs]
+            ids = self._order[::-1]
+        out = []
+        for i in ids:
+            job = self._jobs.get(i)
+            if job is None or (owner is not None and job.owner != owner):
+                continue
+            out.append(job)
+            if len(out) >= limit:
+                break
+        return out
 
 
 STORE = Store()

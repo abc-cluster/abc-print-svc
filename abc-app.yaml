@@ -21,7 +21,12 @@ port: 8080
 health: /health
 
 access: team
-expose: [public]
+# NARROWED 2026-10-19. This was [public] while the service had no authentication
+# of its own, on the belief recorded below that `access: team` gated API calls. It
+# does not: GET /jobs enumerated every caller's jobs and every artifact was then
+# fetchable by id, unauthenticated, from the open internet. Restore [public] only
+# once token auth is in and verified.
+expose: [shared, private]
 
 resources:
   # A thesis assemble is multi-pass and CPU-bound for ~30 s; the default 500 MHz
@@ -32,10 +37,22 @@ resources:
 
 env:
   # Allowed browser origins. A plugin running in an editor is a browser context,
-  # so without this every call is blocked before reaching a handler. Left
-  # permissive because the platform auth-gates the app (access: team) — the
-  # service itself has no authentication of its own.
+  # so without this every call is blocked before reaching a handler.
+  #
+  # This was left as "*" on the reasoning that `access: team` auth-gated the app.
+  # That was never tested and is false — an unauthenticated caller on the public
+  # internet could list jobs and download other people's compiled documents. CORS
+  # was never the control here anyway: it constrains browsers, not curl. The real
+  # control is the bearer token; this stays permissive so an editor plugin can
+  # call the API, and the token is what decides whether the call is allowed.
   ABCPRINT_CORS_ORIGINS: "*"
+  # ABC_PRINT_SVC_TOKEN is deliberately NOT here. The hashes are not
+  # brute-forceable, but an authentication store does not belong in a git
+  # history; it is set with `abc app config abc-print-svc set …` instead. With
+  # the variable unset the service refuses every request except /health and the
+  # docs, so a deployment that forgets it fails closed and says so at
+  # /health.auth rather than serving everyone.
+  #
   # Pinned so two builds of one bundle differ only in ways that carry no
   # document meaning.
   ABCPRINT_SOURCE_DATE_EPOCH: "1700000000"

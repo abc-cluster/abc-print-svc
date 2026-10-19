@@ -19,12 +19,13 @@ import json
 import shutil as _shutil
 import tempfile as _tempfile
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query, Form, BackgroundTasks
+from fastapi import (FastAPI, UploadFile, File, HTTPException, Query, Form,
+                     BackgroundTasks, Depends, Header)
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import (archive, compile as compiler, delivery, equivalence, fonts, identity, jobs,
+from . import (archive, auth, compile as compiler, delivery, equivalence, fonts, identity, jobs,
                profile as profiles, toolchain, workspace)
 from .models import (DeliveryResult, Equivalence, FontHealth, Health, Job as JobModel,
                      JobList, ProfileList, Toolchain as ToolchainModel)
@@ -123,6 +124,67 @@ def _doc_page(title: str, script: str, body: str) -> HTMLResponse:
 <style>body{{margin:0}}</style></head><body>{body}<script src="{script}"></script></body></html>""")
 
 
+# --- authentication --------------------------------------------------------
+#
+# Loaded once, at import, and a malformed value is FATAL. A deployment whose token
+# config is broken must not come up looking healthy while accepting nobody — and
+# must certainly not come up accepting everybody, which is the state this service
+# was actually in until 2026-10-19.
+try:
+    _TOKENS = auth.load()
+except auth.AuthError as _exc:                      # pragma: no cover - startup
+    raise RuntimeError(f"{auth.ENV_VAR} is malformed: {_exc}") from None
+
+_AUTH_OFF = auth.disabled()
+
+
+def _auth_state() -> dict:
+    """What the gate is doing, reported by /health so it is never a guess."""
+    if _AUTH_OFF:
+        return {"mode": "disabled", "tokens": 0,
+                "warning": f"{auth.DISABLE_VAR}=disabled — every caller is "
+                           f"'anonymous' and shares one job view. Never use this "
+                           f"on a reachable deployment."}
+    if not _TOKENS:
+        return {"mode": "no-tokens", "tokens": 0,
+                "warning": f"{auth.ENV_VAR} is empty, so every request except "
+                           f"/health and the docs is refused. Mint one with "
+                           f"`python -m abcprint.tokens new <label>`."}
+    return {"mode": "token", "tokens": len(_TOKENS)}
+
+
+def require(scope: str):
+    """Dependency: a valid bearer token carrying `scope`.
+
+    401 for absent or unrecognised, 403 for recognised but not permitted — the
+    distinction a caller needs to know whether to fix the token or ask for a wider
+    one. Neither response says anything about which tokens exist.
+    """
+    if scope not in auth.SCOPES:                    # programming error, not input
+        raise RuntimeError(f"unknown scope {scope!r}")
+
+    def dep(authorization: str | None = Header(default=None)) -> auth.Principal:
+        if _AUTH_OFF:
+            return auth.ANONYMOUS
+        if not _TOKENS:
+            raise HTTPException(
+                503,
+                f"this deployment has no tokens configured, so it can authorise "
+                f"nobody. Set {auth.ENV_VAR} (see docs/authentication.md).")
+        principal = auth.verify(auth.bearer(authorization), _TOKENS)
+        if principal is None:
+            raise HTTPException(
+                401, "a bearer token is required: `Authorization: Bearer abcp_…`",
+                headers={"WWW-Authenticate": "Bearer"})
+        if not principal.may(scope):
+            raise HTTPException(
+                403, f"this token does not carry the {scope!r} scope "
+                     f"(it has: {', '.join(principal.scopes)})")
+        return principal
+
+    return dep
+
+
 @app.get("/redoc", include_in_schema=False)
 def redoc():
     """Reference documentation, served from the image so it works with no egress."""
@@ -187,13 +249,18 @@ def health():
     body = {"ok": not problems, "problems": problems, "toolchain": tc.as_dict(),
             "typst_mismatch": tc.typst_mismatch, "fonts": fh,
             "cors_allowed_origins": CORS_ORIGINS,
-            "engines_available": _engines_available()}
+            "engines_available": _engines_available(),
+            # Reported so an unauthenticated deployment is VISIBLE rather than
+            # assumed. The previous posture was assumed, and was wrong for
+            # months. /health stays open because the Nomad check needs it, and
+            # it carries no document data.
+            "auth": _auth_state()}
     return JSONResponse(body, status_code=200 if not problems else 503)
 
 
 @app.get("/toolchain", tags=["health"], response_model=ToolchainModel,
          summary="What rendered this document?")
-def get_toolchain():
+def get_toolchain(principal: auth.Principal = Depends(require("read"))):
     """The manifest half that names the binaries deciding the output.
 
     `typst_bundled` is authoritative: Quarto renders with its own typst, so
@@ -207,7 +274,9 @@ def get_toolchain():
 @app.get("/fonts", tags=["health"], response_model=FontHealth,
          summary="Which family will actually render?")
 def get_fonts(family: list[str] | None = Query(
-        default=None, description="Families to resolve. Defaults to the profile's required set.")):
+        default=None, description="Families to resolve. Defaults to the profile's required set."),
+    principal: auth.Principal = Depends(require("read")),
+):
     """Resolve each requested family to the one that will render, and say whether
     that is a substitution and whether the substitute is metric-compatible."""
     return fonts.health(family or REQUIRED_FONTS, FONT_PATHS or None)
@@ -222,6 +291,7 @@ async def post_equivalence(
     dpi: int = Query(72, ge=36, le=300, description="Raster DPI. Higher is stricter and slower."),
     sample: int = Query(6, ge=0, le=2000,
                         description="Pages to rasterise, spread across the document. 0 rasterises every page."),
+    principal: auth.Principal = Depends(require("read")),
 ):
     """Compare on four planes, strictest last: page count, extracted text with
     layout, rendered pixels, and the metadata that should be stable.
@@ -260,6 +330,9 @@ async def post_equivalence(
 
 def _run_job_quarto(job_id: str, root: str, profile_ref: str, formats: list,
                     user_metadata: dict, entry: str) -> None:
+    # Unscoped deliberately: this is the background worker, which has no
+    # principal because it IS the service. Scoping it to a caller would make
+    # every job fail to start.
     job = jobs.STORE.get(job_id)
     if job is None:
         return
@@ -287,6 +360,7 @@ def _run_job_quarto(job_id: str, root: str, profile_ref: str, formats: list,
 
 def _run_job(job_id: str, root: str, chapters, copy: str, run_checks: bool) -> None:
     """Background worker. Failures are recorded on the job, never swallowed."""
+    # Unscoped deliberately — see _run_job_quarto.
     job = jobs.STORE.get(job_id)
     if job is None:
         return
@@ -339,6 +413,7 @@ async def post_compile(
                                                "The Opsomming is withheld while its source section is "
                                                "still a stub, so neither copy can ship a placeholder."),
     checks: bool = Form(True, description="Run the verification suite. Leave on: verification is the product."),
+    principal: auth.Principal = Depends(require("compile")),
 ):
     """Accept a bundle and start a build.
 
@@ -381,30 +456,31 @@ async def post_compile(
         raise
 
     job = jobs.STORE.create({"chapters": wanted or found, "copy": copy,
-                             "checks": checks, "identity": ident})
+                             "checks": checks, "identity": ident},
+                            owner=principal.label)
     job.workdir = root
     background.add_task(_run_job, job.id, root, wanted, copy, checks)
     return JSONResponse({**job.as_dict(), "detected_chapters": found}, status_code=202)
 
 
 @app.get("/jobs", tags=["compile"], response_model=JobList, summary="Recent jobs")
-def list_jobs(limit: int = Query(20, ge=1, le=200)):
+def list_jobs(limit: int = Query(20, ge=1, le=200), principal: auth.Principal = Depends(require("read"))):
     """Most recent jobs, newest first.
 
     The store is in-process and bounded, so jobs do not survive a restart of the
     service. A client that needs durable history should record the manifest it
     gets back rather than relying on this.
     """
-    return {"jobs": [j.as_dict() for j in jobs.STORE.list(limit)]}
+    return {"jobs": [j.as_dict() for j in jobs.STORE.list(limit, owner=principal.label)]}
 
 
 @app.get("/jobs/{job_id}", tags=["compile"], response_model=JobModel,
          summary="Job state, manifest and check report")
-def get_job(job_id: str):
+def get_job(job_id: str, principal: auth.Principal = Depends(require("read"))):
     """The manifest travels with the result: toolchain, font resolutions and the
     pinned epoch, so a rebuild is a meaningful claim. The check report travels
     with it too, rather than being left in a log nobody reads."""
-    job = jobs.STORE.get(job_id)
+    job = jobs.STORE.get(job_id, owner=principal.label)
     if job is None:
         raise HTTPException(404, "no such job")
     return job.as_dict()
@@ -416,13 +492,13 @@ def get_job(job_id: str):
                           "description": "The file."},
                     409: {"description": "The job has not succeeded."},
                     410: {"description": "The job's workspace has been reclaimed."}})
-def get_artifact(job_id: str, name: str):
+def get_artifact(job_id: str, name: str, principal: auth.Principal = Depends(require("read"))):
     """Stream one artefact by the `name` given in the job's `artifacts` list.
 
     Available only once the job has succeeded. A name that is not in that list is
     a 404 whose message names what the job did produce.
     """
-    job = jobs.STORE.get(job_id)
+    job = jobs.STORE.get(job_id, owner=principal.label)
     if job is None:
         raise HTTPException(404, "no such job")
     if job.state is not jobs.State.SUCCEEDED:
@@ -453,7 +529,7 @@ def _artifact_path(job, name: str) -> str:
 
 @app.get("/delivery/destinations", tags=["delivery"],
          summary="Which destinations this deployment can actually use")
-def delivery_destinations():
+def delivery_destinations(principal: auth.Principal = Depends(require("deliver"))):
     """Report configuration rather than let a delivery fail later with a surprise.
 
     PDF password protection is deliberately NOT implemented yet; it will attach
@@ -480,6 +556,7 @@ def deliver(
     key: str | None = Form(None, description="minio: object key, e.g. users/<you>/thesis.pdf"),
     subdir: str | None = Form(None, description="downloads: optional subfolder."),
     filename: str | None = Form(None, description="Override the delivered filename."),
+    principal: auth.Principal = Depends(require("deliver")),
 ):
     """Send a finished artefact to its destination.
 
@@ -493,7 +570,7 @@ def deliver(
     boundary, when it is; until then a delivered file is not protected and a
     client should not imply otherwise.
     """
-    job = jobs.STORE.get(job_id)
+    job = jobs.STORE.get(job_id, owner=principal.label)
     if job is None:
         raise HTTPException(404, "no such job")
     if job.state is not jobs.State.SUCCEEDED:
@@ -515,7 +592,7 @@ def deliver(
 
 @app.get("/profiles", tags=["compile"], response_model=ProfileList,
          summary="Profiles this deployment offers")
-def list_profiles():
+def list_profiles(principal: auth.Principal = Depends(require("read"))):
     """A profile selects an ENGINE and configures it.
 
     `has_compliance_rules: false` means jobs under that profile report
@@ -550,7 +627,7 @@ def _check_identity(paths: dict) -> dict:
     return {"source": identity.FILENAME, "keys": sorted(fields)}
 
 
-async def _archive_thesis(background, bundle, prof, chapters, copy, checks):
+async def _archive_thesis(background, bundle, prof, chapters, copy, checks, principal):
     """The thesis arm of /compile/archive.
 
     Separate from the quarto arm because the two do opposite things with the
@@ -594,7 +671,7 @@ async def _archive_thesis(background, bundle, prof, chapters, copy, checks):
         "chapters": wanted or found, "copy": copy, "checks": checks,
         "identity": ident,
         "archive": workspace.describe_thesis(manifest, mapping),
-    })
+    }, owner=principal.label)
     job.workdir = root
     background.add_task(_run_job, job.id, root, wanted, copy, checks)
     return JSONResponse({**job.as_dict(), "detected_chapters": found}, status_code=202)
@@ -625,6 +702,7 @@ async def post_compile_archive(
         description='thesis-assemble only. "examination", "submission" or "library".'),
     checks: bool = Form(
         True, description="thesis-assemble only. Run the verification suite."),
+    principal: auth.Principal = Depends(require("compile")),
 ):
     """Submit a whole manuscript directory as one zip.
 
@@ -669,7 +747,8 @@ async def post_compile_archive(
         raise HTTPException(400, f"profile {prof.ref} uses the {prof.engine!r} engine")
 
     if prof.engine == "thesis-assemble":
-        return await _archive_thesis(background, bundle, prof, chapters, copy, checks)
+        return await _archive_thesis(background, bundle, prof, chapters, copy, checks,
+                                     principal)
 
     meta: dict = {}
     if quarto_metadata:
@@ -704,7 +783,8 @@ async def post_compile_archive(
     job = jobs.STORE.create({"profile": prof.ref, "engine": prof.engine,
                              "entry": resolved, "outputs": formats,
                              "archive": archive.describe(manifest, f"src/{resolved}"),
-                             "quarto_metadata_keys": sorted(meta)})
+                             "quarto_metadata_keys": sorted(meta)},
+                            owner=principal.label)
     job.workdir = work
     background.add_task(_run_job_quarto, job.id, work, profile, formats, meta, resolved)
     return JSONResponse(job.as_dict(), status_code=202)
@@ -731,6 +811,7 @@ async def post_compile_manuscript(
             "code or read a client-chosen path are refused by name — see "
             "`refused_quarto_metadata_keys` on GET /profiles. The effective metadata is "
             "returned in the job manifest, so what was merged is never a guess.")),
+    principal: auth.Principal = Depends(require("compile")),
 ):
     """Render a manuscript with the quarto-render engine.
 
@@ -777,7 +858,8 @@ async def post_compile_manuscript(
 
     job = jobs.STORE.create({"profile": prof.ref, "engine": prof.engine,
                              "entry": entry, "outputs": formats,
-                             "quarto_metadata_keys": sorted(meta)})
+                             "quarto_metadata_keys": sorted(meta)},
+                            owner=principal.label)
     job.workdir = root
     background.add_task(_run_job_quarto, job.id, root, profile, formats, meta, entry)
     return JSONResponse(job.as_dict(), status_code=202)
