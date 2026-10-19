@@ -139,6 +139,12 @@ class Job(BaseModel):
     """
     id: str
     state: str = Field(..., description="queued | running | succeeded | failed.")
+    owner: str = Field(
+        "anonymous",
+        description=("The token label that created this job. A token sees only its own "
+                     "jobs, and another token's job is a 404 rather than a 403 — so this "
+                     "always matches your own token. Reported rather than left implicit: "
+                     "before jobs were owned, this endpoint listed everyone's."))
     created: float
     started: float | None = None
     finished: float | None = None
