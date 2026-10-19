@@ -12,7 +12,7 @@ framework: custom
 # Multi-arch (amd64 + arm64), private to the abc-cluster org. Pinned rather than
 # :latest so a restart cannot silently change the renderer — pagination is
 # load-bearing here, and a quarto bump moves it.
-image: ghcr.io/abc-cluster/abc-print-svc:0.11.0
+image: ghcr.io/abc-cluster/abc-print-svc:0.12.0
 
 port: 8080
 # Not "/": /health returns 503 when the deployment cannot build — a missing font
@@ -21,12 +21,16 @@ port: 8080
 health: /health
 
 access: team
-# NARROWED 2026-10-19. This was [public] while the service had no authentication
-# of its own, on the belief recorded below that `access: team` gated API calls. It
-# does not: GET /jobs enumerated every caller's jobs and every artifact was then
-# fetchable by id, unauthenticated, from the open internet. Restore [public] only
-# once token auth is in and verified.
-expose: [shared, private]
+# Public again as of 2026-10-19, but for a different reason than before.
+#
+# It was [public] while the service had no authentication at all, on the untested
+# belief that `access: team` gated API calls. It does not: GET /jobs enumerated
+# every caller's jobs and every artefact was fetchable by id, unauthenticated,
+# from the open internet. It was narrowed to [shared, private] the moment that
+# was confirmed, and is reopened here only because the bearer-token gate is in
+# and verified against the live deployment. An editor plugin needs internet
+# reach; the token, not the network boundary, is what decides who gets in.
+expose: [public, shared, private]
 
 resources:
   # A thesis assemble is multi-pass and CPU-bound for ~30 s; the default 500 MHz
@@ -46,12 +50,23 @@ env:
   # control is the bearer token; this stays permissive so an editor plugin can
   # call the API, and the token is what decides whether the call is allowed.
   ABCPRINT_CORS_ORIGINS: "*"
-  # ABC_PRINT_SVC_TOKEN is deliberately NOT here. The hashes are not
-  # brute-forceable, but an authentication store does not belong in a git
-  # history; it is set with `abc app config abc-print-svc set …` instead. With
-  # the variable unset the service refuses every request except /health and the
-  # docs, so a deployment that forgets it fails closed and says so at
-  # /health.auth rather than serving everyone.
+  # Bearer tokens, as SHA-256 HASHES — never the tokens themselves. The
+  # plaintexts exist only in their holders' hands and in the operator's local
+  # token file; `python -m abcprint.tokens new` is the only place one is printed.
+  #
+  # This lives in the descriptor rather than `abc app config` because the
+  # platform reserves ABC_* for its own injected variables and refuses to set
+  # one:
+  #   "ABC_PRINT_SVC_TOKEN" is a platform-injected variable and cannot be set
+  # The descriptor still delivers it to the job, so the consequence is only that
+  # ROTATION IS A COMMIT plus a deploy, not a single CLI call. Committing the
+  # hashes is acceptable — a sha256 of a 32-byte urlsafe token is not
+  # brute-forceable — but adding or revoking a token is a code change, and a
+  # revoked token keeps working until the redeploy lands.
+  #
+  # With this unset the service refuses every request except /health and the
+  # docs, and says so at /health.auth, rather than serving everyone.
+  ABC_PRINT_SVC_TOKEN: "abhi:compile,read,deliver:sha256:94bad53e8f04bccd3b089b250bb418bd527d4edd79dded9e10fbb751cb95f2e8|jorge-logseq:compile,read:sha256:891d8c04cbb7d968feab468d8c1bc3ba81bcafb4f804d3da49eb62a6052875b7"
   #
   # Pinned so two builds of one bundle differ only in ways that carry no
   # document meaning.

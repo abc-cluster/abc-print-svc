@@ -49,14 +49,26 @@ singular and one token is the common case.
 ABC_PRINT_SVC_TOKEN='jorge-logseq:compile,read:sha256:ddbcf978…'
 ```
 
-On the cluster, set it with `abc app config` rather than committing it to
-`abc-app.yaml`. The hash is not brute-forceable, but an authentication store
-does not belong in a git history:
+On the abc-cluster platform it goes in `abc-app.yaml` under `env:`, **not**
+through `abc app config` — the platform reserves `ABC_*` for its own injected
+variables and refuses to set one:
+
+```
+"ABC_PRINT_SVC_TOKEN" is a platform-injected variable and cannot be set/unset
+```
+
+The descriptor still delivers it to the job, so the only consequence is that
+**rotation is a commit plus a deploy**, not a single CLI call — and a revoked
+token keeps working until that deploy lands. Committing the hashes is acceptable
+(a SHA-256 of a 32-byte urlsafe token is not brute-forceable); committing a
+token would not be.
 
 ```bash
-ABC_CLI_CONTEXT=<ctx> abc app config abc-print-svc set \
-  ABC_PRINT_SVC_TOKEN='label:compile,read:sha256:…'
+ABC_CLI_CONTEXT=<ctx> abc app deploy --node-pool platform
 ```
+
+Keep the plaintexts somewhere outside the repo — `~/.abc/print-svc-tokens.txt`,
+mode 600, is what this deployment uses. Nothing can recover them from the hashes.
 
 Check what a deployment accepts, without revealing anything:
 
@@ -111,5 +123,6 @@ a `warning` saying so. Never set this on a reachable deployment.
 
 It is not an identity system. A token is a bearer credential with a label: there
 are no users, no expiry and no refresh. Revocation means removing the entry and
-restarting the service. Rate limiting, per-token quotas and PDF password
+redeploying, which on this platform is a commit — so a compromised token is live
+until that lands. Rate limiting, per-token quotas and PDF password
 protection are all separate pieces of work and are not pretended at here.
