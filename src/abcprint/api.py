@@ -25,7 +25,7 @@ from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import (archive, auth, compile as compiler, delivery, equivalence, fonts, identity, jobs,
+from . import (archive, auth, capacity, compile as compiler, delivery, equivalence, fonts, identity, jobs,
                profile as profiles, toolchain, workspace)
 from .models import (DeliveryResult, Equivalence, FontHealth, Health, Job as JobModel,
                      JobList, ProfileList, Toolchain as ToolchainModel)
@@ -137,6 +137,12 @@ except auth.AuthError as _exc:                      # pragma: no cover - startup
 
 _AUTH_OFF = auth.disabled()
 
+# Reclaim finished jobs' workspaces on a timer. Without it nothing ever deleted
+# them: `rmtree` appeared only on error paths, so four full-thesis builds left
+# 148 MB behind and the 410 "job workspace has been reclaimed" branch described a
+# reclamation that never happened.
+jobs.start_sweeper()
+
 
 def _auth_state() -> dict:
     """What the gate is doing, reported by /health so it is never a guess."""
@@ -151,6 +157,21 @@ def _auth_state() -> dict:
                            f"/health and the docs is refused. Mint one with "
                            f"`python -m abcprint.tokens new <label>`."}
     return {"mode": "token", "tokens": len(_TOKENS)}
+
+
+def _reserve_slot() -> None:
+    """Take an admission slot, or refuse now rather than later.
+
+    Refusing on the REQUEST path is the point. Without it the service accepted
+    everything and queued it inside the CPU scheduler, where the wait is invisible
+    and shared equally — measured at eight concurrent builds, every one reported
+    `running` and took 6.7x as long as a lone build, for about 20% more total
+    throughput. A 429 is a worse-looking answer and a far more useful one.
+    """
+    try:
+        capacity.GATE.reserve()
+    except capacity.Full as exc:
+        raise HTTPException(429, str(exc), headers={"Retry-After": "30"})
 
 
 def require(scope: str):
@@ -254,7 +275,10 @@ def health():
             # assumed. The previous posture was assumed, and was wrong for
             # months. /health stays open because the Nomad check needs it, and
             # it carries no document data.
-            "auth": _auth_state()}
+            "auth": _auth_state(),
+            # Reported so a queue is visible. The previous behaviour admitted
+            # everything and hid the wait inside the CPU scheduler.
+            "capacity": capacity.GATE.state()}
     return JSONResponse(body, status_code=200 if not problems else 503)
 
 
@@ -335,27 +359,32 @@ def _run_job_quarto(job_id: str, root: str, profile_ref: str, formats: list,
     # every job fail to start.
     job = jobs.STORE.get(job_id)
     if job is None:
+        capacity.GATE.release_reservation()
         return
-    job.state, job.started = jobs.State.RUNNING, __import__("time").time()
-    try:
-        prof = profiles.load(profile_ref)
-        paths = {"repo": root, "src": os.path.join(root, "src"),
-                 "figures": os.path.join(root, "src", "figures"),
-                 "build": os.path.join(root, "_build")}
-        result = compiler.run_quarto(paths, prof, formats=formats,
-                                     user_metadata=user_metadata, entry=entry)
-        job.artifacts = result["artifacts"]
-        job.compliant = result.get("compliant")
-        job.manifest = result["manifest"]
-        job.checks = result["checks"]
-        job.log_tail = result["log_tail"]
-        job.state = jobs.State.SUCCEEDED
-    except Exception as exc:
-        job.error = str(exc)
-        job.log_tail = getattr(exc, "log_tail", []) or []
-        job.state = jobs.State.FAILED
-    finally:
-        job.finished = __import__("time").time()
+    # Blocks until a render slot frees. The job stays `queued` while it waits, so
+    # polling shows the truth: measured at N=8 every build reported `running` and
+    # took 6.7x as long, which looks like a slow service rather than a queue.
+    with capacity.GATE:
+        job.state, job.started = jobs.State.RUNNING, __import__("time").time()
+        try:
+            prof = profiles.load(profile_ref)
+            paths = {"repo": root, "src": os.path.join(root, "src"),
+                     "figures": os.path.join(root, "src", "figures"),
+                     "build": os.path.join(root, "_build")}
+            result = compiler.run_quarto(paths, prof, formats=formats,
+                                         user_metadata=user_metadata, entry=entry)
+            job.artifacts = result["artifacts"]
+            job.compliant = result.get("compliant")
+            job.manifest = result["manifest"]
+            job.checks = result["checks"]
+            job.log_tail = result["log_tail"]
+            job.state = jobs.State.SUCCEEDED
+        except Exception as exc:
+            job.error = str(exc)
+            job.log_tail = getattr(exc, "log_tail", []) or []
+            job.state = jobs.State.FAILED
+        finally:
+            job.finished = __import__("time").time()
 
 
 def _run_job(job_id: str, root: str, chapters, copy: str, run_checks: bool) -> None:
@@ -363,28 +392,31 @@ def _run_job(job_id: str, root: str, chapters, copy: str, run_checks: bool) -> N
     # Unscoped deliberately — see _run_job_quarto.
     job = jobs.STORE.get(job_id)
     if job is None:
+        capacity.GATE.release_reservation()
         return
-    job.state, job.started = jobs.State.RUNNING, __import__("time").time()
-    try:
-        paths = {"repo": root, "thesis": os.path.join(root, "writeup", "thesis"),
-                 "figures": os.path.join(root, "writeup", "figures"),
-                 "inserted": os.path.join(root, "writeup", "inserted-papers"),
-                 "bin": os.path.join(root, "writeup", "bin"),
-                 "quarto": os.path.join(root, "writeup", "thesis-quarto"),
-                 "build": os.path.join(root, "writeup", "_build")}
-        result = compiler.run(paths, chapters, copy=copy, run_checks=run_checks)
-        job.artifacts = result["artifacts"]
-        job.compliant = result.get("compliant")
-        job.manifest = result["manifest"]
-        job.checks = result["checks"]
-        job.log_tail = result["log_tail"]
-        job.state = jobs.State.SUCCEEDED
-    except Exception as exc:
-        job.error = str(exc)
-        job.log_tail = getattr(exc, "log_tail", []) or []
-        job.state = jobs.State.FAILED
-    finally:
-        job.finished = __import__("time").time()
+    # See _run_job_quarto: the job stays `queued` until a render slot frees.
+    with capacity.GATE:
+        job.state, job.started = jobs.State.RUNNING, __import__("time").time()
+        try:
+            paths = {"repo": root, "thesis": os.path.join(root, "writeup", "thesis"),
+                     "figures": os.path.join(root, "writeup", "figures"),
+                     "inserted": os.path.join(root, "writeup", "inserted-papers"),
+                     "bin": os.path.join(root, "writeup", "bin"),
+                     "quarto": os.path.join(root, "writeup", "thesis-quarto"),
+                     "build": os.path.join(root, "writeup", "_build")}
+            result = compiler.run(paths, chapters, copy=copy, run_checks=run_checks)
+            job.artifacts = result["artifacts"]
+            job.compliant = result.get("compliant")
+            job.manifest = result["manifest"]
+            job.checks = result["checks"]
+            job.log_tail = result["log_tail"]
+            job.state = jobs.State.SUCCEEDED
+        except Exception as exc:
+            job.error = str(exc)
+            job.log_tail = getattr(exc, "log_tail", []) or []
+            job.state = jobs.State.FAILED
+        finally:
+            job.finished = __import__("time").time()
 
 
 @app.post("/compile", tags=["compile"], status_code=202,
@@ -455,6 +487,7 @@ async def post_compile(
         _shutil.rmtree(root, ignore_errors=True)
         raise
 
+    _reserve_slot()
     job = jobs.STORE.create({"chapters": wanted or found, "copy": copy,
                              "checks": checks, "identity": ident},
                             owner=principal.label)
@@ -553,8 +586,17 @@ def deliver(
     artifact: str = Form(..., description="Artefact name from the job's `artifacts` list."),
     destination: str = Form(..., description='"downloads" or "minio".'),
     bucket: str | None = Form(None, description="minio: target bucket."),
-    key: str | None = Form(None, description="minio: object key, e.g. users/<you>/thesis.pdf"),
-    subdir: str | None = Form(None, description="downloads: optional subfolder."),
+    key: str | None = Form(
+        None,
+        description=("minio: object key. It MUST begin with `users/<your token "
+                     "label>/` — a token may only write under its own prefix, and a "
+                     "key outside it is refused rather than quietly relocated, so the "
+                     "uri you get back is always the one you asked for.")),
+    subdir: str | None = Form(
+        None,
+        description=("downloads: optional subfolder, nested INSIDE your own folder. "
+                     "Every token delivers under a folder named for it, so no value "
+                     "here can reach another caller's files.")),
     filename: str | None = Form(None, description="Override the delivered filename."),
     principal: auth.Principal = Depends(require("deliver")),
 ):
@@ -569,6 +611,13 @@ def deliver(
     PDF password protection is **not implemented**. It will attach here, at this
     boundary, when it is; until then a delivered file is not protected and a
     client should not imply otherwise.
+
+    **Deliveries are namespaced per token.** `downloads` writes under a folder
+    named for your token, and a `minio` key must sit under `users/<your label>/`.
+    Neither was true before 2026-10-19: two tokens delivering the same filename
+    wrote the same path and the second silently replaced the first, and `bucket`
+    and `key` were taken wholly from the client, so `deliver` could write anywhere
+    the service's credentials reached.
     """
     job = jobs.STORE.get(job_id, owner=principal.label)
     if job is None:
@@ -578,11 +627,12 @@ def deliver(
     src = _artifact_path(job, artifact)
     try:
         if destination == "downloads":
-            return delivery.to_downloads(src, filename or artifact, subdir)
+            return delivery.to_downloads(src, filename or artifact, subdir,
+                                         owner=principal.label)
         if destination == "minio":
             if not (bucket and key):
                 raise HTTPException(400, "minio delivery needs both bucket and key")
-            return delivery.to_minio(src, bucket, key)
+            return delivery.to_minio(src, bucket, key, owner=principal.label)
         raise HTTPException(400, f'unknown destination {destination!r}; expected "downloads" or "minio"')
     except delivery.DeliveryError as exc:
         raise HTTPException(503, str(exc))
@@ -666,6 +716,7 @@ async def _archive_thesis(background, bundle, prof, chapters, copy, checks, prin
     finally:
         _shutil.rmtree(upload_dir, ignore_errors=True)
 
+    _reserve_slot()
     job = jobs.STORE.create({
         "profile": prof.ref, "engine": prof.engine,
         "chapters": wanted or found, "copy": copy, "checks": checks,
@@ -780,6 +831,7 @@ async def post_compile_archive(
     finally:
         _shutil.rmtree(root, ignore_errors=True)
 
+    _reserve_slot()
     job = jobs.STORE.create({"profile": prof.ref, "engine": prof.engine,
                              "entry": resolved, "outputs": formats,
                              "archive": archive.describe(manifest, f"src/{resolved}"),
@@ -856,6 +908,7 @@ async def post_compile_manuscript(
         _shutil.rmtree(root, ignore_errors=True)
         raise HTTPException(400, str(exc))
 
+    _reserve_slot()
     job = jobs.STORE.create({"profile": prof.ref, "engine": prof.engine,
                              "entry": entry, "outputs": formats,
                              "quarto_metadata_keys": sorted(meta)},
