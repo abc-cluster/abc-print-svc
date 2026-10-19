@@ -121,13 +121,11 @@ def to_minio(src: str, bucket: str, key: str, *, owner: str = "anonymous",
     a request body; a caller may override per-request when the service is
     brokering for a user whose identity differs from the service's own.
     """
-    endpoint = endpoint or os.environ.get("ABCPRINT_S3_ENDPOINT", "")
-    access_key = access_key or os.environ.get("AWS_ACCESS_KEY_ID", "")
-    secret_key = secret_key or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
-    if not (endpoint and access_key and secret_key):
-        raise DeliveryError(
-            "object-store delivery is not configured: set ABCPRINT_S3_ENDPOINT, "
-            "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, or pass them in the request.")
+    # The REQUEST is validated before the DEPLOYMENT is. Checking credentials
+    # first meant a caller who asked to write outside their own prefix was told
+    # "object-store delivery is not configured" — true, unrelated, and it would
+    # have sent them to an operator instead of to their own key. It also hid the
+    # prefix guard from any end-to-end test on an unconfigured deployment.
     if not bucket:
         raise DeliveryError("a bucket is required")
     if ALLOWED_BUCKET and bucket != ALLOWED_BUCKET:
@@ -135,6 +133,14 @@ def to_minio(src: str, bucket: str, key: str, *, owner: str = "anonymous",
             f"this deployment only delivers to bucket {ALLOWED_BUCKET!r}; "
             f"asked for {bucket!r}")
     key = minio_key_for(owner, key)
+
+    endpoint = endpoint or os.environ.get("ABCPRINT_S3_ENDPOINT", "")
+    access_key = access_key or os.environ.get("AWS_ACCESS_KEY_ID", "")
+    secret_key = secret_key or os.environ.get("AWS_SECRET_ACCESS_KEY", "")
+    if not (endpoint and access_key and secret_key):
+        raise DeliveryError(
+            "object-store delivery is not configured: set ABCPRINT_S3_ENDPOINT, "
+            "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, or pass them in the request.")
 
     try:
         import boto3  # imported lazily: object storage is optional at runtime

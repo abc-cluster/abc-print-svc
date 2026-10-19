@@ -196,3 +196,18 @@ def test_the_job_survives_its_workspace():
     store.sweep(ttl=1)
     assert store.get(job.id) is job
     assert store.get(job.id).checks == {"passed": 22, "failed": 0}
+
+
+def test_a_bad_key_is_reported_as_a_bad_key_even_when_unconfigured(monkeypatch):
+    """Request before deployment.
+
+    The credential check used to run first, so a caller writing outside their own
+    prefix was told "object-store delivery is not configured" — true, unrelated,
+    and it would have sent them to an operator instead of to their own key.
+    """
+    for var in ("ABCPRINT_S3_ENDPOINT", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    with pytest.raises(DeliveryError) as e:
+        delivery.to_minio("/dev/null", "b", "users/bob/x.pdf", owner="alice")
+    assert "users/alice/" in str(e.value)
+    assert "not configured" not in str(e.value)
