@@ -88,10 +88,59 @@ dropped the only record of where the directory was.
 
 A render in flight is never swept.
 
+## There is no per-token quota, and one token can fill the queue
+
+This is a known limitation, not an oversight waiting to be discovered. The 2 + 8
+admission bound is **global**: it protects the *deployment* from being overloaded.
+It does nothing to protect callers from each other.
+
+Measured on 0.13.0, 2 CPU / 4 GiB:
+
+```
+one token submits repeatedly
+  capacity: {"rendering": 2, "waiting": 8, "admitted": 10}
+  that token owns 10 of 10 slots: {"queued": 8, "running": 2}
+
+a second token, having submitted nothing at all
+  POST /compile/archive -> 429
+```
+
+A client that submits in a loop — a plugin with a retry, a script over a
+directory of chapters — takes every slot, and the next person to arrive is
+refused on their first attempt. Nothing recovers this except waiting for the
+first client's builds to drain, which at full-thesis sizes is minutes.
+
+**The 429 message is honest but not diagnostic.** It says the service is full,
+which is true, and does not say *who* filled it. A caller cannot tell "someone
+else is using it" from "my own retry loop did this", and those need opposite
+responses.
+
+### What to do about it today
+
+- **Do not point a retrying client at a shared deployment.** If a plugin resubmits
+  on failure, bound its retries; a 429 means stop, not try harder. `Retry-After`
+  is 30 seconds and is meant literally.
+- **Keep `ABCPRINT_MAX_QUEUED` small.** A deep queue converts monopolisation into
+  a long silent wait. 8 is already a deliberate ceiling, not a default to raise.
+- **Give a heavy automated client its own deployment.** Two containers with
+  `max_renders: 1` isolate two workloads better than one with `max_renders: 2`
+  shared, if contention is the problem rather than throughput.
+- **Watch `/health`.** `capacity.waiting` climbing while `rendering` stays at the
+  maximum is the signature.
+
+### A token is an integration, not a person
+
+Worth stating plainly, because it bounds what a future quota could even mean: a
+token identifies a *caller*, and an editor plugin is one caller. If one token
+serves twenty students, a per-token quota throttles all twenty together, and the
+service cannot tell them apart — it never sees their identities. Per-person
+fairness needs an end-user identity the API does not currently carry.
+
+The design options, their costs, and what to measure first are in
+`abc-universe`, `brainstorms/thesis-compilation-service/2026-10-19-concurrency-evaluation.md`.
+
 ## What is still true
 
 - **One replica, in-process job store.** A second replica would not recognise the
   first's job ids. Two cores and a semaphore are the constraint today, not the
   store; a shared store is the change to make when the CPU budget grows.
-- **No per-token quota.** The queue is global, so one token can fill it. Bounded
-  and visible now, but not fair.
