@@ -121,6 +121,10 @@ a `warning` saying so. Never set this on a reachable deployment.
 
 ## What this is not
 
+Concurrency, queueing and delivery namespacing are in
+[`concurrency.md`](concurrency.md) — a token's scopes decide what it may do, and
+that document covers what happens when several tokens do it at once.
+
 It is not an identity system. A token is a bearer credential with a label: there
 are no users, no expiry and no refresh. Revocation means removing the entry and
 redeploying, which on this platform is a commit — so a compromised token is live
