@@ -9,10 +9,91 @@ rendered document, a **manifest** of everything that decided that output, and a
 
 ---
 
-## 1. The five calls
+## 0. Get a token in, first
+
+Every call except `GET /health` and the docs pages needs a bearer token. Without
+one you get **401** on everything, which looks like a broken service.
 
 ```
-GET  /health                       can this deployment build at all?
+Authorization: Bearer abcp_…
+```
+
+**Experimenting in a browser.** Open `/docs`, press **Authorize**, paste the
+token. Every *Try it out* on that page then carries it, and `/redoc` shows a
+padlock on each call that needs one. (Until 2026-10-27 the OpenAPI document
+declared no security scheme at all, so there *was* no Authorize button — the
+token appeared as an untitled optional header and a client author could only
+discover it by reading this file.)
+
+**The cheapest proof your token works**, needing only the `read` scope:
+
+```bash
+SVC=https://mbhg-bioinformatics-abc-print-svc.apps.seedling.abc-cluster.cloud
+TOKEN=abcp_…
+
+curl -s -H "Authorization: Bearer $TOKEN" $SVC/profiles | jq '.profiles[].ref'
+# "biorxiv-dev@0.1"
+# "su-fmhs@unversioned"
+```
+
+**A whole build, end to end**, using a fixture that ships in the repo so it needs
+nothing of your own:
+
+```bash
+JOB=$(curl -s -X POST $SVC/compile/archive \
+        -H "Authorization: Bearer $TOKEN" \
+        -F bundle=@examples/garden-thesis-demo.zip \
+        -F profile=su-fmhs -F copy=examination | jq -r .id)
+
+until [ "$(curl -s -H "Authorization: Bearer $TOKEN" $SVC/jobs/$JOB | jq -r .state)" != "queued" ] \
+   && [ "$(curl -s -H "Authorization: Bearer $TOKEN" $SVC/jobs/$JOB | jq -r .state)" != "running" ]; do sleep 2; done
+
+curl -s -H "Authorization: Bearer $TOKEN" $SVC/jobs/$JOB | jq '{state, compliant, checks}'
+curl -s -H "Authorization: Bearer $TOKEN" -o out.pdf \
+     $SVC/jobs/$JOB/artifacts/thesis-assembled.pdf
+```
+
+### Scopes
+
+A token carries some subset of three:
+
+| scope | endpoints |
+|---|---|
+| `read` | `/profiles` `/toolchain` `/fonts` `/jobs` `/jobs/{id}` artefacts `/equivalence` |
+| `compile` | `/compile` `/compile/archive` `/compile/manuscript` |
+| `deliver` | `/jobs/{id}/deliver` `/delivery/destinations` |
+
+A plugin that submits and downloads wants `compile,read` and should not hold
+`deliver` — that scope writes to an object store.
+
+### Jobs are private to the token that created them
+
+`GET /jobs` lists only your own, and another token's job id is a **404**, not a
+403, so the response does not confirm it exists. You cannot poll an id someone
+else gives you, and nobody can poll yours. This matters if you were planning to
+hand job ids around: don't.
+
+### The queue is global, and 429 means wait
+
+The deployment renders two documents at a time with a queue of eight. Past that a
+submission is refused with **429** and `Retry-After`. The queue is shared, so a
+429 can mean *somebody else* filled it.
+
+**A client that retries immediately on 429 will take the whole service.** That is
+measured, not hypothetical: one token submitting in a loop held all ten admission
+slots, and the next caller's first request was refused. Back off on 429.
+
+`GET /health` needs no token and reports `auth` and `capacity`, so it answers both
+"which deployment am I pointed at" and "is it busy" without credentials.
+
+---
+
+## 1. The five calls
+
+All but `/health` need `Authorization: Bearer abcp_…` — see §0.
+
+```
+GET  /health                       can this deployment build at all?  (no token)
 GET  /profiles                     what profiles exist, and what may be overridden
 POST /compile        (thesis)      or  POST /compile/manuscript   -> 202 + job id
 GET  /jobs/{id}                    poll until state is terminal
@@ -208,6 +289,22 @@ to measure it. `GET /fonts` and the job manifest both report what actually resol
 Errors name the **rule**, not the tool. If you ever see a raw typst or pandoc
 traceback reach a user, that is a bug worth reporting — the symptom pointing
 somewhere other than the cause is what makes these expensive.
+
+
+### Authentication and capacity
+
+| code | meaning | retry? |
+|---|---|---|
+| **401** | no token, or one this deployment does not recognise | no — fix the token |
+| **403** | valid token, but it lacks the scope this call needs | no — ask for a wider token |
+| **429** | too many builds admitted; `Retry-After` is set | yes, after the delay |
+| **410** | the job existed; its artefacts have expired (6h) | rebuild |
+| **404** on a job | not yours, or never existed | no |
+| **503** | the deployment has no tokens configured at all | no — tell the operator |
+
+The 401/403 split is the one worth handling properly: they need opposite
+responses, and a client that treats both as "auth failed" will either retry
+forever or give up on a fixable permissions problem.
 
 ## 11. Not implemented yet
 

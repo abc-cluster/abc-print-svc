@@ -23,6 +23,7 @@ from fastapi import (FastAPI, UploadFile, File, HTTPException, Query, Form,
                      BackgroundTasks, Depends, Header)
 from fastapi.responses import JSONResponse, HTMLResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 
 from . import (archive, auth, capacity, compile as compiler, delivery, equivalence, fonts, identity, jobs,
@@ -40,6 +41,63 @@ Document compilation and compliance verification for thesis-style documents.
 **The encoded rulebook is the product; the renderer is delivery.** A student can
 already turn text into a PDF. What costs them weeks near submission is satisfying
 a faculty rulebook that nobody has written down in executable form.
+
+### Start here: authorise, then try something
+
+Every endpoint except `/health` and these docs needs a bearer token.
+
+1. Press **Authorize** at the top of this page and paste your token (it starts
+   `abcp_`). Every *Try it out* below will then carry it.
+2. `GET /profiles` is the cheapest thing that proves the token works — it needs
+   only `read` and returns the two profiles with their engines and open fields.
+3. `POST /compile/archive` with `examples/garden-thesis-demo.zip` and
+   `profile=su-fmhs` is the smallest real build. It returns **202** and a job id.
+4. Poll `GET /jobs/{id}` until `state` is `succeeded` or `failed`, then
+   `GET /jobs/{id}/artifacts/{name}`.
+
+With `curl`:
+
+```bash
+SVC=https://mbhg-bioinformatics-abc-print-svc.apps.seedling.abc-cluster.cloud
+TOKEN=abcp_…
+
+curl -s -H "Authorization: Bearer $TOKEN" $SVC/profiles | jq '.profiles[].ref'
+
+JOB=$(curl -s -X POST $SVC/compile/archive \
+        -H "Authorization: Bearer $TOKEN" \
+        -F bundle=@examples/garden-thesis-demo.zip \
+        -F profile=su-fmhs -F copy=examination | jq -r .id)
+
+curl -s -H "Authorization: Bearer $TOKEN" $SVC/jobs/$JOB | jq '{state, compliant, checks}'
+```
+
+**What your scopes open.** A token carries some of `compile`, `read`, `deliver`:
+
+| scope | endpoints |
+|---|---|
+| `read` | `/profiles` `/toolchain` `/fonts` `/jobs` `/jobs/{id}` artefacts `/equivalence` |
+| `compile` | `/compile` `/compile/archive` `/compile/manuscript` |
+| `deliver` | `/jobs/{id}/deliver` `/delivery/destinations` |
+
+**Reading the refusals**, because they mean different things and only one of them
+is worth retrying:
+
+| | meaning | what to do |
+|---|---|---|
+| **401** | no token, or one this deployment does not know | fix the token |
+| **403** | valid token, wrong scope | ask for a wider one; retrying cannot help |
+| **429** | too many builds admitted | honour `Retry-After`; a 429 means *wait*, not retry harder |
+| **410** | the job existed and its artefacts have expired | rebuild; artefacts live 6 hours |
+| **404** on a job | it is not yours, or never existed | a token sees only its own jobs |
+
+`GET /health` needs no token and reports `auth` and `capacity`, so it is the way
+to check which deployment you are pointed at and whether it is busy.
+
+**Two things that will surprise a client author.** Jobs are private to the token
+that created them, so you cannot poll an id a colleague gave you — it is a 404.
+And the render queue is **global**, so a 429 can mean somebody else filled it; a
+client that retries immediately on 429 will monopolise the service, which is
+measured behaviour, not a worry.
 
 ### Why there is no byte-comparison endpoint
 
@@ -174,6 +232,41 @@ def _reserve_slot() -> None:
         raise HTTPException(429, str(exc), headers={"Retry-After": "30"})
 
 
+# Declared as a SECURITY SCHEME rather than a plain header parameter, which is
+# what puts the "Authorize" button in /docs and the padlocks in /redoc. With a
+# bare `Header(...)` dependency the OpenAPI document carried no securitySchemes at
+# all: the token showed up as an optional free-text header on some operations, so
+# a client author opening the docs could press "Try it out", collect a 401, and
+# find nowhere to put their token. auto_error=False so the messages below are
+# ours — FastAPI's own would be a bare 403 with no explanation.
+_bearer = HTTPBearer(
+    scheme_name="abc-print-svc token",
+    bearerFormat="abcp_…",
+    auto_error=False,
+    description=("A token minted with `python -m abcprint.tokens new <label>`. "
+                 "Paste it into **Authorize** above and every Try-it-out call "
+                 "below will carry it. Scopes decide what it opens: `compile`, "
+                 "`read`, `deliver`."),
+)
+
+# Attached to every gated operation so the docs show what a caller can actually
+# get back, instead of only the happy path.
+AUTH_RESPONSES: dict = {
+    401: {"description": "No token, or one this deployment does not recognise. "
+                         "Fix the token."},
+    403: {"description": "The token is valid but lacks the scope this call needs. "
+                         "Ask for a wider one — retrying will not help."},
+    503: {"description": "This deployment has no tokens configured, so it can "
+                         "authorise nobody."},
+}
+COMPILE_RESPONSES: dict = {
+    **AUTH_RESPONSES,
+    429: {"description": "Too many builds are already admitted. Honour "
+                         "`Retry-After`; a 429 means wait, not retry harder. The "
+                         "queue is global, so another caller may have filled it."},
+}
+
+
 def require(scope: str):
     """Dependency: a valid bearer token carrying `scope`.
 
@@ -184,7 +277,8 @@ def require(scope: str):
     if scope not in auth.SCOPES:                    # programming error, not input
         raise RuntimeError(f"unknown scope {scope!r}")
 
-    def dep(authorization: str | None = Header(default=None)) -> auth.Principal:
+    def dep(creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
+            ) -> auth.Principal:
         if _AUTH_OFF:
             return auth.ANONYMOUS
         if not _TOKENS:
@@ -192,7 +286,8 @@ def require(scope: str):
                 503,
                 f"this deployment has no tokens configured, so it can authorise "
                 f"nobody. Set {auth.ENV_VAR} (see docs/authentication.md).")
-        principal = auth.verify(auth.bearer(authorization), _TOKENS)
+        token = creds.credentials if creds and creds.scheme.lower() == "bearer" else None
+        principal = auth.verify(token, _TOKENS)
         if principal is None:
             raise HTTPException(
                 401, "a bearer token is required: `Authorization: Bearer abcp_…`",
@@ -283,7 +378,7 @@ def health():
 
 
 @app.get("/toolchain", tags=["health"], response_model=ToolchainModel,
-         summary="What rendered this document?")
+         summary="What rendered this document?", responses=AUTH_RESPONSES)
 def get_toolchain(principal: auth.Principal = Depends(require("read"))):
     """The manifest half that names the binaries deciding the output.
 
@@ -296,7 +391,7 @@ def get_toolchain(principal: auth.Principal = Depends(require("read"))):
 
 
 @app.get("/fonts", tags=["health"], response_model=FontHealth,
-         summary="Which family will actually render?")
+         summary="Which family will actually render?", responses=AUTH_RESPONSES)
 def get_fonts(family: list[str] | None = Query(
         default=None, description="Families to resolve. Defaults to the profile's required set."),
     principal: auth.Principal = Depends(require("read")),
@@ -308,7 +403,8 @@ def get_fonts(family: list[str] | None = Query(
 
 @app.post("/equivalence", tags=["verification"], response_model=Equivalence,
           summary="Are these two builds the same document?",
-          responses={422: {"description": "One of the uploads could not be read as a PDF."}})
+          responses={422: {"description": "One of the uploads could not be read as a PDF."},
+                     **AUTH_RESPONSES})
 async def post_equivalence(
     a: UploadFile = File(..., description="First PDF."),
     b: UploadFile = File(..., description="Second PDF. May share a filename with the first."),
@@ -422,7 +518,8 @@ def _run_job(job_id: str, root: str, chapters, copy: str, run_checks: bool) -> N
 @app.post("/compile", tags=["compile"], status_code=202,
           summary="Submit sources for compilation",
           responses={202: {"description": "Accepted. Poll `/jobs/{id}`."},
-                     400: {"description": "The bundle was rejected; the message names why."}})
+                     400: {"description": "The bundle was rejected; the message names why."},
+                     **COMPILE_RESPONSES})
 async def post_compile(
     background: BackgroundTasks,
     sources: list[UploadFile] = File(
@@ -496,7 +593,8 @@ async def post_compile(
     return JSONResponse({**job.as_dict(), "detected_chapters": found}, status_code=202)
 
 
-@app.get("/jobs", tags=["compile"], response_model=JobList, summary="Recent jobs")
+@app.get("/jobs", tags=["compile"], response_model=JobList, summary="Recent jobs",
+         responses=AUTH_RESPONSES)
 def list_jobs(limit: int = Query(20, ge=1, le=200), principal: auth.Principal = Depends(require("read"))):
     """Most recent jobs, newest first.
 
@@ -508,7 +606,7 @@ def list_jobs(limit: int = Query(20, ge=1, le=200), principal: auth.Principal = 
 
 
 @app.get("/jobs/{job_id}", tags=["compile"], response_model=JobModel,
-         summary="Job state, manifest and check report")
+         summary="Job state, manifest and check report", responses=AUTH_RESPONSES)
 def get_job(job_id: str, principal: auth.Principal = Depends(require("read"))):
     """The manifest travels with the result: toolchain, font resolutions and the
     pinned epoch, so a rebuild is a meaningful claim. The check report travels
@@ -524,7 +622,8 @@ def get_job(job_id: str, principal: auth.Principal = Depends(require("read"))):
          responses={200: {"content": {"application/octet-stream": {}},
                           "description": "The file."},
                     409: {"description": "The job has not succeeded."},
-                    410: {"description": "The job's workspace has been reclaimed."}})
+                    410: {"description": "The job's workspace has been reclaimed."},
+                     **AUTH_RESPONSES})
 def get_artifact(job_id: str, name: str, principal: auth.Principal = Depends(require("read"))):
     """Stream one artefact by the `name` given in the job's `artifacts` list.
 
@@ -561,7 +660,7 @@ def _artifact_path(job, name: str) -> str:
 # ── delivery ────────────────────────────────────────────────────────────────
 
 @app.get("/delivery/destinations", tags=["delivery"],
-         summary="Which destinations this deployment can actually use")
+         summary="Which destinations this deployment can actually use", responses=AUTH_RESPONSES)
 def delivery_destinations(principal: auth.Principal = Depends(require("deliver"))):
     """Report configuration rather than let a delivery fail later with a surprise.
 
@@ -580,7 +679,8 @@ def delivery_destinations(principal: auth.Principal = Depends(require("deliver")
 @app.post("/jobs/{job_id}/deliver", tags=["delivery"], response_model=DeliveryResult,
           summary="Deliver an artefact",
           responses={503: {"description": "That destination is not configured on this deployment; "
-                                          "check GET /delivery/destinations first."}})
+                                          "check GET /delivery/destinations first."},
+                     **AUTH_RESPONSES})
 def deliver(
     job_id: str,
     artifact: str = Form(..., description="Artefact name from the job's `artifacts` list."),
@@ -641,7 +741,7 @@ def deliver(
 # ── profiles ────────────────────────────────────────────────────────────────
 
 @app.get("/profiles", tags=["compile"], response_model=ProfileList,
-         summary="Profiles this deployment offers")
+         summary="Profiles this deployment offers", responses=AUTH_RESPONSES)
 def list_profiles(principal: auth.Principal = Depends(require("read"))):
     """A profile selects an ENGINE and configures it.
 
@@ -731,7 +831,8 @@ async def _archive_thesis(background, bundle, prof, chapters, copy, checks, prin
 @app.post("/compile/archive", tags=["compile"], status_code=202,
           summary="Compile from a zip archive (project-garden layout)",
           responses={202: {"description": "Accepted. Poll `/jobs/{id}`."},
-                     400: {"description": "The archive was refused; the message names why."}})
+                     400: {"description": "The archive was refused; the message names why."},
+                     **COMPILE_RESPONSES})
 async def post_compile_archive(
     background: BackgroundTasks,
     bundle: UploadFile = File(
@@ -845,7 +946,8 @@ async def post_compile_archive(
 @app.post("/compile/manuscript", tags=["compile"], status_code=202,
           summary="Compile a manuscript (quarto-render engine)",
           responses={202: {"description": "Accepted. Poll `/jobs/{id}`."},
-                     400: {"description": "Bundle or quarto_metadata rejected; the message names why."}})
+                     400: {"description": "Bundle or quarto_metadata rejected; the message names why."},
+                     **COMPILE_RESPONSES})
 async def post_compile_manuscript(
     background: BackgroundTasks,
     sources: list[UploadFile] = File(
