@@ -12,7 +12,7 @@ framework: custom
 # Multi-arch (amd64 + arm64), private to the abc-cluster org. Pinned rather than
 # :latest so a restart cannot silently change the renderer — pagination is
 # load-bearing here, and a quarto bump moves it.
-image: ghcr.io/abc-cluster/abc-print-svc:0.13.0
+image: ghcr.io/abc-cluster/abc-print-svc:0.14.0
 
 port: 8080
 # Not "/": /health returns 503 when the deployment cannot build — a missing font
