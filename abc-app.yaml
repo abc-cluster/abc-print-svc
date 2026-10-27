@@ -66,7 +66,14 @@ env:
   #
   # With this unset the service refuses every request except /health and the
   # docs, and says so at /health.auth, rather than serving everyone.
-  ABC_PRINT_SVC_TOKEN: "abhi:compile,read,deliver:sha256:94bad53e8f04bccd3b089b250bb418bd527d4edd79dded9e10fbb751cb95f2e8|jorge-logseq:compile,read:sha256:891d8c04cbb7d968feab468d8c1bc3ba81bcafb4f804d3da49eb62a6052875b7"
+  #
+  # 2026-10-27: jorge-logseq widened from compile,read to all three scopes. Note
+  # the TOKEN DID NOT CHANGE — scopes are a field in the entry and the hash covers
+  # only the token, so a holder's credential survives a permissions change. That
+  # is also why `deliver` is safe to hand out now and was not before: delivery is
+  # namespaced per token (downloads under the label, minio keys under
+  # users/<label>/), so a wider scope cannot reach anyone else's files.
+  ABC_PRINT_SVC_TOKEN: "abhi:compile,read,deliver:sha256:94bad53e8f04bccd3b089b250bb418bd527d4edd79dded9e10fbb751cb95f2e8|jorge-logseq:compile,read,deliver:sha256:891d8c04cbb7d968feab468d8c1bc3ba81bcafb4f804d3da49eb62a6052875b7"
   #
   # Pinned so two builds of one bundle differ only in ways that carry no
   # document meaning.
