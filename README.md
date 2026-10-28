@@ -27,10 +27,13 @@ protection, or a `/validate` endpoint.
 
 | | |
 |---|---|
+| **[Quickstart: using the API](docs/quickstart.md)** | **start here.** Token to finished PDF, with files the examples create themselves |
 | [Writing a client / plugin](docs/api-integration.md) | the contract, job lifecycle, error shapes, config sourcing |
 | [Compile a hybrid thesis](docs/compile-a-hybrid-thesis.md) | conventional + published + manuscript chapters |
 | [Compile a manuscript](docs/compile-a-manuscript.md) | the quarto-render engine |
 | [Compile from a zip](docs/compile-from-a-zip.md) | project-garden layout, no plugin needed |
+| [Authentication](docs/authentication.md) | tokens, scopes, how they are configured |
+| [Concurrent use](docs/concurrency.md) | the render queue, 429, retention |
 | [Building and running](docs/building.md) | build from source, CORS, runtime options |
 | [Demo documents](examples/README.md) | fixture content; `./examples/run-demo.sh` verifies a deployment |
 | `/redoc` · `/docs` | live API reference and try-it-out, vendored into the image |

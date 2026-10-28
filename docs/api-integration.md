@@ -1,7 +1,11 @@
 # Integrating a client with abc-print-svc
 
-For anyone writing a client — a Logseq plugin, an editor extension, CI. It assumes
+For anyone writing a client: a Logseq plugin, an editor extension, CI. It assumes
 no context beyond this file and the live schema at `/redoc`.
+
+**New to the API?** Read [`quickstart.md`](quickstart.md) first. It goes from a
+token to a finished PDF in a dozen commands, and the examples create their own
+files. This document is the reference behind it.
 
 **What the service is.** It takes document sources plus a *profile* and returns a
 rendered document, a **manifest** of everything that decided that output, and a
