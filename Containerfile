@@ -135,6 +135,30 @@ COPY src/ /srv/src/
 COPY profiles/ /srv/profiles/
 # Pipeline scripts, vendored into the build context by docker/vendor-pipeline.sh.
 COPY pipeline/ /srv/pipeline/
+# Refuse to build from a context the vendor step did not finish.
+#
+# On 2026-11-08 the published 0.13.0 and 0.14.0 were found to carry render logs
+# with the author's private front matter in /srv/profiles/su-fmhs/. The sanitiser
+# had caught them and exited fatally; the exit code was lost to a `| tail`, and
+# the image was built from the rejected context anyway. Nothing in the build
+# noticed, because nothing here asked.
+#
+# Two generic checks, deliberately naming no private terms (this file is public):
+#   - the vendor step's completion marker is present: PROVENANCE.json when the
+#     pipeline was vendored, NOT-VENDORED.txt when it deliberately was not. A
+#     half-vendored context has neither, which is exactly the state that shipped,
+#     and which also made every manifest report "not-vendored" while the thesis
+#     engine was running.
+#   - no build artefacts are in the profile. A render log, a subbuild file or a
+#     PDF has no business in an image, and the render log is what leaked.
+RUN { test -f /srv/pipeline/PROVENANCE.json || test -f /srv/pipeline/NOT-VENDORED.txt; } \
+      || { echo "FATAL: pipeline/ has no completion marker — run docker/vendor-pipeline.sh and check that it printed VENDOR OK" >&2; exit 1; } \
+ && if [ -d /srv/profiles/su-fmhs ] && [ ! -f /srv/profiles/su-fmhs/PROVENANCE.json ]; then \
+      echo "FATAL: profiles/su-fmhs/ exists without provenance — the vendor step did not finish" >&2; exit 1; fi \
+ && leftovers="$(find /srv/profiles /srv/pipeline -type f \( -name '*.log' -o -name 'subuild*' -o -name '*.pdf' \) | head -20)" \
+ && if [ -n "$leftovers" ]; then \
+      echo "FATAL: build artefacts in the vendored profile/pipeline:" >&2; echo "$leftovers" >&2; exit 1; fi \
+ && echo "vendored context verified"
 ENV PYTHONPATH=/srv/src \
     ABCPRINT_VENDOR=/srv/vendor \
     ABCPRINT_FONT_PATHS=/usr/local/share/fonts/licensed:/usr/local/share/fonts/ofl \
