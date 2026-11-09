@@ -49,22 +49,19 @@ singular and one token is the common case.
 ABC_PRINT_SVC_TOKEN='jorge-logseq:compile,read:sha256:ddbcf978…'
 ```
 
-On the abc-cluster platform it goes in `abc-app.yaml` under `env:`, **not**
-through `abc app config` — the platform reserves `ABC_*` for its own injected
-variables and refuses to set one:
+On the abc-cluster platform the hashes live in **`nomad/tokens.hashes`**, one
+entry per line, and `nomad/deploy.sh` passes them to the front-door job. (They
+were in `abc-app.yaml` until the service left `abc app deploy` on 2026-11-09:
+the platform reserves `ABC_*` for its own injected variables, so `abc app
+config` could never set this one.)
 
-```
-"ABC_PRINT_SVC_TOKEN" is a platform-injected variable and cannot be set/unset
-```
-
-The descriptor still delivers it to the job, so the only consequence is that
-**rotation is a commit plus a deploy**, not a single CLI call — and a revoked
+So **rotation is a commit plus a deploy**, not a single CLI call — and a revoked
 token keeps working until that deploy lands. Committing the hashes is acceptable
 (a SHA-256 of a 32-byte urlsafe token is not brute-forceable); committing a
 token would not be.
 
 ```bash
-ABC_CLI_CONTEXT=<ctx> abc app deploy --node-pool platform
+NOMAD_ADDR=… NOMAD_TOKEN=<management> nomad/deploy.sh <version>
 ```
 
 Keep the plaintexts somewhere outside the repo — `~/.abc/print-svc-tokens.txt`,

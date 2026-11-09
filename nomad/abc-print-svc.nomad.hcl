@@ -84,10 +84,18 @@ job "abc-print-svc" {
     khan_lineage = "interim: abc-print-svc front door on abc-dispatch"
   }
 
+  # A canary: a new version runs beside the old until it passes /health, then
+  # takes over; if it never does, the old one keeps serving and the job reverts.
+  # Without it, updating a one-allocation service stops the old allocation first.
   update {
-    max_parallel     = 1
-    min_healthy_time = "10s"
-    health_check     = "checks"
+    max_parallel      = 1
+    canary            = 1
+    auto_promote      = true
+    auto_revert       = true
+    min_healthy_time  = "10s"
+    healthy_deadline  = "5m"
+    progress_deadline = "10m"
+    health_check      = "checks"
   }
 
   group "app" {
@@ -144,7 +152,9 @@ job "abc-print-svc" {
       config {
         image   = var.image
         command = "sh"
-        args    = ["-c", "mkdir -p /srv/dispatch/abc-print-svc/state /srv/dispatch/abc-print-svc/runs && chown 10001 /srv/dispatch/abc-print-svc /srv/dispatch/abc-print-svc/state /srv/dispatch/abc-print-svc/runs && chmod 0750 /srv/dispatch/abc-print-svc"]
+        # Per job name: two front doors (a -next beside the live one) must never
+        # share a run store or run directories — each would adopt the other's runs.
+        args    = ["-c", "d=/srv/dispatch/abc-print-svc/${var.name}; mkdir -p $d/state $d/runs && chown 10001 /srv/dispatch/abc-print-svc $d $d/state $d/runs && chmod 0750 /srv/dispatch/abc-print-svc $d"]
         network_mode = "none"
       }
       volume_mount {
@@ -184,8 +194,8 @@ job "abc-print-svc" {
         ABCPRINT_DISPATCH_NAMESPACE  = "svc-print"
         ABCPRINT_DISPATCH_JOB        = "abc-print-run"
         ABCPRINT_JURISDICTION        = var.jurisdiction
-        ABCPRINT_DATA_DIR            = "/srv/dispatch/abc-print-svc/state"
-        ABCPRINT_DISPATCH_ROOT       = "/srv/dispatch/abc-print-svc/runs"
+        ABCPRINT_DATA_DIR            = "/srv/dispatch/abc-print-svc/${var.name}/state"
+        ABCPRINT_DISPATCH_ROOT       = "/srv/dispatch/abc-print-svc/${var.name}/runs"
         ABCPRINT_CORS_ORIGINS        = "*"
         ABCPRINT_MAX_RENDERS         = "2"
         ABCPRINT_MAX_QUEUED          = "8"
