@@ -1,0 +1,16 @@
+# ABC_PRINT_SVC_TOKEN for the cluster deployment — label:scopes:sha256:hex, one
+# per line. HASHES, never tokens: the plaintexts exist only in their holders'
+# hands and in the operator's ~/.abc/print-svc-tokens.txt (mode 600), and
+# `python -m abcprint.tokens new <label>` is the only place one is printed.
+#
+# Moved here from abc-app.yaml when the service left `abc app deploy`
+# (2026-11-09). Rotation is still a commit plus a deploy (nomad/deploy.sh), and a
+# revoked token keeps working until that deploy lands. Committing the hashes is
+# acceptable — a sha256 of a 32-byte urlsafe token is not brute-forceable.
+#
+# 2026-10-27: jorge-logseq widened from compile,read to all three scopes. The
+# token did not change — scopes are a field in the entry and the hash covers only
+# the token — and `deliver` is safe to hand out because delivery is namespaced per
+# token.
+abhi:compile,read,deliver:sha256:94bad53e8f04bccd3b089b250bb418bd527d4edd79dded9e10fbb751cb95f2e8
+jorge-logseq:compile,read,deliver:sha256:891d8c04cbb7d968feab468d8c1bc3ba81bcafb4f804d3da49eb62a6052875b7
