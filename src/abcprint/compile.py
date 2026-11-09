@@ -11,11 +11,11 @@ arbitrary markdown from a Logseq plugin is arbitrary input.
 from __future__ import annotations
 
 import os
-import subprocess
 import time
 
 from . import fonts, profile as profiles, toolchain
 from .engines import quarto_render
+from .runner import DEFAULT as _DEFAULT_RUNNER, TimedOut
 
 # Fixed epoch so a rebuild of the same bundle carries the same timestamps. Any
 # constant does; this one is arbitrary and stable.
@@ -42,14 +42,15 @@ def _env(paths: dict) -> dict:
 
 
 def run_quarto(paths: dict, prof: profiles.Profile, *, formats: list[str],
-               user_metadata: dict | None = None, entry: str = "index.qmd") -> dict:
+               user_metadata: dict | None = None, entry: str = "index.qmd",
+               runner=_DEFAULT_RUNNER) -> dict:
     """The quarto-render engine, wrapped to the same result shape as the thesis one.
 
     `compliant` is None rather than True when the profile defines no compliance
     rules: a profile with nothing to check must not claim compliance.
     """
     res = quarto_render.run(paths, prof, formats=formats,
-                            user_metadata=user_metadata, entry=entry)
+                            user_metadata=user_metadata, entry=entry, runner=runner)
     tc = toolchain.detect()
     fh = fonts.health(
         [ (((prof.fonts or {}).get(r) or {}).get("stack") or [None])[0]
@@ -80,7 +81,7 @@ def run_quarto(paths: dict, prof: profiles.Profile, *, formats: list[str],
 
 
 def run(paths: dict, chapters: list[str] | None, copy: str = "examination",
-        run_checks: bool = True) -> dict:
+        run_checks: bool = True, runner=_DEFAULT_RUNNER) -> dict:
     """Invoke thesis-assemble.sh and return artefacts, checks and a manifest."""
     # Three copies of one profile, differing only in front matter. The examination copy
     # carries neither the Afrikaans Opsomming nor the branded title frame; the submission
@@ -109,12 +110,11 @@ def run(paths: dict, chapters: list[str] | None, copy: str = "examination",
 
     started = time.time()
     try:
-        proc = subprocess.run(cmd, cwd=paths["repo"], env=_env(paths),
-                              capture_output=True, text=True, timeout=BUILD_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
+        returncode, log = runner(cmd, cwd=paths["repo"], env=_env(paths),
+                                 timeout_s=BUILD_TIMEOUT_S)
+    except TimedOut:
         raise CompileError(f"build exceeded {BUILD_TIMEOUT_S}s and was killed")
 
-    log = (proc.stdout or "") + (proc.stderr or "")
     lines = log.strip().splitlines()
 
     # A non-zero exit means one of two very different things and they must not be
@@ -132,7 +132,7 @@ def run(paths: dict, chapters: list[str] | None, copy: str = "examination",
                               else "application/vnd.openxmlformats-officedocument.wordprocessingml.document"})
     if not artifacts:
         err = CompileError(
-            f"render failed (rc={proc.returncode}) and produced no PDF or DOCX; last lines:\n"
+            f"render failed (rc={returncode}) and produced no PDF or DOCX; last lines:\n"
             + "\n".join(lines[-25:]))
         err.log_tail = lines[-60:]
         raise err
@@ -148,7 +148,7 @@ def run(paths: dict, chapters: list[str] | None, copy: str = "examination",
         # The document exists; whether it is COMPLIANT is a separate answer that
         # travels with it rather than being collapsed into job success.
         "compliant": checks["all_clear"],
-        "return_code": proc.returncode,
+        "return_code": returncode,
         "checks": checks,
         "manifest": {
             # Everything that decided this output, returned WITH it, so a rebuild

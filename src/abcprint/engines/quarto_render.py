@@ -18,12 +18,12 @@ filters.
 from __future__ import annotations
 
 import os
-import subprocess
 import time
 
 import yaml
 
 from .. import profile as profiles
+from ..runner import DEFAULT as _DEFAULT_RUNNER, TimedOut
 
 BUILD_TIMEOUT_S = int(os.environ.get("ABCPRINT_BUILD_TIMEOUT", "1800"))
 
@@ -135,7 +135,8 @@ def compose_metadata(prof: profiles.Profile, formats: list[str],
 
 
 def run(paths: dict, prof: profiles.Profile, *, formats: list[str],
-        user_metadata: dict | None = None, entry: str = "index.qmd") -> dict:
+        user_metadata: dict | None = None, entry: str = "index.qmd",
+        runner=_DEFAULT_RUNNER) -> dict:
     src_dir = paths["src"]
     root = paths["repo"]
     src = os.path.join(src_dir, entry)
@@ -215,13 +216,12 @@ def run(paths: dict, prof: profiles.Profile, *, formats: list[str],
         cmd = ["quarto", "render", os.path.join("src", entry), "--to", fmt_map[f],
                "--output-dir", "_out", "--no-execute"]
         try:
-            proc = subprocess.run(cmd, cwd=root, env=env, capture_output=True,
-                                  text=True, timeout=BUILD_TIMEOUT_S)
-        except subprocess.TimeoutExpired:
+            rc, out = runner(cmd, cwd=root, env=env, timeout_s=BUILD_TIMEOUT_S)
+        except TimedOut:
             raise EngineError(f"render of {f} exceeded {BUILD_TIMEOUT_S}s")
-        log_all += [f"$ {' '.join(cmd)}"] + ((proc.stdout or "") + (proc.stderr or "")).splitlines()
-        if proc.returncode != 0:
-            err = EngineError(f"quarto render --to {fmt_map[f]} failed (rc={proc.returncode}); "
+        log_all += [f"$ {' '.join(cmd)}"] + out.splitlines()
+        if rc != 0:
+            err = EngineError(f"quarto render --to {fmt_map[f]} failed (rc={rc}); "
                               "last lines:\n" + "\n".join(log_all[-25:]))
             err.log_tail = log_all[-60:]
             raise err

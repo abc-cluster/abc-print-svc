@@ -15,7 +15,21 @@
 # holding a licence that covers server-side rendering mounts the originals at
 # /usr/local/share/fonts/licensed and they win automatically, because fontconfig
 # resolves the real family name ahead of the stand-in.
-FROM debian:bookworm-slim
+# Two targets from one file, built and tagged together:
+#
+#   worker   the compilation pipeline: quarto, typst, fonts, profiles, the thesis
+#            pipeline. A dispatched run executes in it, one Nomad job per run.
+#   api      the front door: validates, admits, queues and dispatches. It carries
+#            NO profile, pipeline or toolchain — only a record of what the worker
+#            built alongside it can do (capabilities.json).
+#
+#   docker buildx build --target worker -t ghcr.io/abc-cluster/abc-print-worker:<v> .
+#   docker buildx build --target api    -t ghcr.io/abc-cluster/abc-print-svc:<v> .
+#
+# Why two: on 2026-11-08 the published API image carried private render logs,
+# because compilation assets were vendored into the image that serves the API.
+# The API image now cannot carry them, because nothing puts them there.
+FROM debian:bookworm-slim AS worker
 
 # Link the published package to its repository. Without
 # org.opencontainers.image.source a GHCR package is an orphan: it does not appear
@@ -112,6 +126,13 @@ RUN mkdir -p /usr/local/share/fonts/ofl/gelasio /usr/local/share/fonts/ofl/jetbr
 COPY requirements.txt /tmp/requirements.txt
 RUN pip3 install --no-cache-dir --break-system-packages -r /tmp/requirements.txt \
     && rm -f /tmp/requirements.txt
+# abc-dispatch, from a wheel vendored at a pinned tag (docker/vendor-dispatch.sh):
+# the repository is private, and a build must not need a credential to reach it.
+COPY vendor-wheels/ /tmp/vendor-wheels/
+RUN test -f /tmp/vendor-wheels/DISPATCH.json \
+      || { echo "FATAL: run docker/vendor-dispatch.sh first" >&2; exit 1; } \
+ && pip3 install --no-cache-dir --break-system-packages --no-index /tmp/vendor-wheels/abc_dispatch-*.whl \
+ && mkdir -p /srv && cp /tmp/vendor-wheels/DISPATCH.json /srv/dispatch-version.json && rm -rf /tmp/vendor-wheels
 
 # --- API documentation assets ----------------------------------------------
 # ReDoc and Swagger UI are vendored rather than pulled from a CDN at page load.
@@ -167,6 +188,10 @@ ENV PYTHONPATH=/srv/src \
     ABCPRINT_PROFILES=/srv/profiles \
     ABCPRINT_DOWNLOADS=/srv/downloads
 
+# What this worker can do, measured in it, for the front door to report.
+RUN PYTHONPATH=/srv/src python3 -m abcprint.capabilities > /srv/capabilities.json \
+ && python3 -c "import json; d=json.load(open('/srv/capabilities.json')); print('capabilities:', sorted(d['profiles']), d['engines_available'])"
+
 # Render unprivileged: arbitrary markdown is arbitrary input, and the service
 # must not be a foothold. Network egress, read-only root and resource caps are
 # applied at run time by the orchestrator, not here.
@@ -174,8 +199,55 @@ RUN useradd -m -u 10001 abcprint && mkdir -p /srv/work /srv/downloads \
     && chown -R abcprint /srv/work /srv/downloads
 USER abcprint
 
+# The worker is not a server. Nomad runs it once per run, as the task of a
+# dispatched child of the operator's parameterized job (nomad/abc-print-run.nomad.hcl):
+# it reads the run's manifest from the shared run directory, compiles, and writes
+# result.json back. The kind comes from the dispatch's own `kind` meta.
+CMD ["python3", "-m", "abc_dispatch.worker", "--kind", "abcprint.service:make_kind"]
+
+
+# ── the front door ───────────────────────────────────────────────────────────
+FROM python:3.11-slim-bookworm AS api
+
+LABEL org.opencontainers.image.source="https://github.com/abc-cluster/abc-print-svc" \
+      org.opencontainers.image.description="abc-print-svc front door: validates, queues and dispatches document builds" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.title="abc-print-svc"
+
+COPY requirements.txt /tmp/requirements.txt
+COPY vendor-wheels/ /tmp/vendor-wheels/
+RUN pip install --no-cache-dir -r /tmp/requirements.txt \
+ && pip install --no-cache-dir --no-index /tmp/vendor-wheels/abc_dispatch-*.whl \
+ && rm -rf /tmp/requirements.txt /tmp/vendor-wheels
+
+WORKDIR /srv
+COPY src/ /srv/src/
+# From the worker stage of THIS build: the record of what it can do, and the
+# vendored API-doc assets. Not its profiles, pipeline or fonts.
+COPY --from=worker /srv/capabilities.json /srv/capabilities.json
+COPY --from=worker /srv/vendor/ /srv/vendor/
+COPY --from=worker /srv/dispatch-version.json /srv/dispatch-version.json
+# Prove the image carries no compilation assets, rather than trusting it.
+RUN ! test -e /srv/profiles && ! test -e /srv/pipeline \
+ && ! command -v quarto >/dev/null \
+ && echo "front door carries no profile, pipeline or toolchain"
+
+ENV PYTHONPATH=/srv/src \
+    ABCPRINT_CAPABILITIES=/srv/capabilities.json \
+    ABCPRINT_PROFILE_REGISTRY=/srv/capabilities.json \
+    ABCPRINT_VENDOR=/srv/vendor \
+    ABCPRINT_DATA_DIR=/srv/dispatch/state \
+    ABCPRINT_DISPATCH_ROOT=/srv/dispatch/runs \
+    ABCPRINT_DOWNLOADS=/srv/downloads
+
+# Same UID as the worker: they share the run directory, each writing files the
+# other must read.
+RUN useradd -m -u 10001 abcprint && mkdir -p /srv/dispatch /srv/downloads \
+    && chown -R abcprint /srv/dispatch /srv/downloads
+USER abcprint
+
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=15s --start-period=20s --retries=3 \
   CMD python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=10).status==200 else 1)"
 
-CMD ["python3","-m","uvicorn","abcprint.api:app","--host","0.0.0.0","--port","8080"]
+CMD ["python3", "-m", "uvicorn", "--factory", "abcprint.service:build", "--host", "0.0.0.0", "--port", "8080"]
