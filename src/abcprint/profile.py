@@ -20,6 +20,11 @@ from dataclasses import dataclass, field
 import yaml
 
 PROFILE_ROOT = os.environ.get("ABCPRINT_PROFILES", "/srv/profiles")
+# The front door's view of the profiles: the descriptors exported from the worker
+# image when it was built (abcprint.capabilities), and nothing else. The front door
+# validates requests against a profile but never renders with one, so it carries
+# no profile directory — and so no template or front matter that could leak.
+REGISTRY_FILE = os.environ.get("ABCPRINT_PROFILE_REGISTRY", "")
 
 # Keys refused inside `quarto_metadata`, with the reason each one is refused.
 # Checked against the top-level key AND nested under `format:`, because Quarto
@@ -111,14 +116,47 @@ def _resolve_dir(ref: str) -> str:
     return path
 
 
+def _registry() -> dict | None:
+    if not REGISTRY_FILE:
+        return None
+    import json
+    with open(REGISTRY_FILE) as fh:
+        return json.load(fh)["profiles"]
+
+
 def available() -> list[str]:
+    reg = _registry()
+    if reg is not None:
+        return sorted(reg)
     if not os.path.isdir(PROFILE_ROOT):
         return []
     return sorted(d for d in os.listdir(PROFILE_ROOT)
                   if os.path.isdir(os.path.join(PROFILE_ROOT, d)))
 
 
+def _from_descriptor(ref: str, d: dict) -> Profile:
+    if "error" in d:
+        raise ProfileError(d["error"])
+    want = ref.split("@", 1)[1] if "@" in ref else None
+    if want and want != d["version"]:
+        raise ProfileError(
+            f"profile {ref!r} requested but the registry holds version {d['version']!r}")
+    fields = ("schema_version", "description", "template", "page", "fonts", "bibliography",
+              "layout", "rules", "checks", "open_to_build")
+    return Profile(name=d["name"], version=d["version"], engine=d["engine"],
+                   **{k: d[k] for k in fields if k in d})
+
+
 def load(ref: str) -> Profile:
+    reg = _registry()
+    if reg is not None:
+        name = ref.split("@", 1)[0]
+        if not name or "/" in name or "\\" in name or name.startswith("."):
+            raise ProfileError(f"invalid profile reference {ref!r}")
+        if name not in reg:
+            raise ProfileError(
+                f"unknown profile {name!r}; available: {', '.join(sorted(reg)) or 'none'}")
+        return _from_descriptor(ref, reg[name])
     d = _resolve_dir(ref)
     path = os.path.join(d, "profile.yaml")
     if not os.path.isfile(path):

@@ -63,6 +63,11 @@ class FontHealth(BaseModel):
     missing: list[str] = Field(default_factory=list)
     substituted: list[str] = Field(default_factory=list, description="requested->resolved pairs.")
     resolutions: list[FontResolution] = Field(default_factory=list)
+    unmeasured: list[str] = Field(
+        default_factory=list,
+        description=("Families not measured when the worker image was built, so their "
+                     "resolution is unknown here. A run's manifest records what actually rendered."))
+    source: str | None = Field(None, description="Where these resolutions come from.")
 
     model_config = {"json_schema_extra": {"example": {
         "ok": True,

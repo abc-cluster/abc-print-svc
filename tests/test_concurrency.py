@@ -10,8 +10,7 @@ import time
 
 import pytest
 
-from abcprint import capacity, delivery, jobs
-from abcprint.capacity import Full, Gate
+from abcprint import delivery
 from abcprint.delivery import DeliveryError
 
 
@@ -88,114 +87,14 @@ def test_the_key_is_refused_rather_than_silently_relocated():
     assert "users/alice/" in str(e.value) and "users/bob/t.pdf" in str(e.value)
 
 
-# --- 3. no admission control ----------------------------------------------
-
-def test_the_queue_is_bounded_and_refuses_rather_than_accepting_forever():
-    g = Gate(max_renders=2, max_queued=3)
-    for _ in range(5):
-        g.reserve()
-    with pytest.raises(Full) as e:
-        g.reserve()
-    assert "2 rendering" in str(e.value) and "3 may wait" in str(e.value)
-
-
-def test_only_max_renders_run_at_once():
-    g = Gate(max_renders=2, max_queued=10)
-    peak, inside, lock = 0, 0, threading.Lock()
-
-    def work():
-        nonlocal peak, inside
-        g.reserve()
-        with g:
-            with lock:
-                inside += 1
-                peak = max(peak, inside)
-            time.sleep(0.2)
-            with lock:
-                inside -= 1
-
-    ts = [threading.Thread(target=work) for _ in range(6)]
-    [t.start() for t in ts]
-    [t.join() for t in ts]
-    assert peak == 2, f"{peak} renders ran at once, limit was 2"
-    assert g.state()["admitted"] == 0
-
-
-def test_a_refused_reservation_is_given_back():
-    g = Gate(max_renders=1, max_queued=0)
-    g.reserve()
-    g.release_reservation()
-    g.reserve()                      # would raise if the first leaked
-
-
-def test_the_gate_reports_what_it_is_doing():
-    g = Gate(max_renders=2, max_queued=2)
-    g.reserve(); g.reserve(); g.reserve()
-    st = g.state()
-    assert st == {"max_renders": 2, "max_queued": 2, "rendering": 0,
-                  "waiting": 3, "admitted": 3}
-
-
-@pytest.mark.parametrize("bad", ["0", "-1", "nope"])
-def test_a_nonsense_limit_is_fatal_rather_than_defaulted(bad, monkeypatch):
-    monkeypatch.setenv("ABCPRINT_MAX_RENDERS", bad)
-    with pytest.raises(RuntimeError):
-        capacity._env_int("ABCPRINT_MAX_RENDERS", 2)
-
-
-# --- 4. workspaces were never reclaimed -----------------------------------
-
-def _job_with_workdir(store, state=jobs.State.SUCCEEDED, age=0.0, size=1000):
-    d = tempfile.mkdtemp(prefix="abcprint-test-")
-    with open(os.path.join(d, "artifact.pdf"), "wb") as fh:
-        fh.write(b"x" * size)
-    job = store.create({})
-    job.workdir = d
-    job.state = state
-    job.finished = time.time() - age
-    return job, d
-
-
-def test_eviction_reclaims_the_workspace():
-    """The evicted Job held the only record of the path, so dropping it leaked
-    the directory permanently."""
-    store = jobs.Store(limit=2)
-    _, d0 = _job_with_workdir(store)
-    _, d1 = _job_with_workdir(store)
-    _, d2 = _job_with_workdir(store)
-    assert not os.path.exists(d0)
-    assert os.path.exists(d1) and os.path.exists(d2)
-
-
-def test_the_sweep_reclaims_finished_jobs_past_the_ttl():
-    store = jobs.Store()
-    old, d_old = _job_with_workdir(store, age=10_000, size=2000)
-    new, d_new = _job_with_workdir(store, age=5)
-    res = store.sweep(ttl=3600)
-    assert res["reclaimed"] == 1 and res["bytes_freed"] == 2000
-    assert not os.path.exists(d_old) and os.path.exists(d_new)
-    # Clearing workdir is what makes the 410 honest.
-    assert old.workdir is None and new.workdir is not None
-
-
-@pytest.mark.parametrize("state", [jobs.State.QUEUED, jobs.State.RUNNING])
-def test_the_sweep_never_touches_a_build_in_flight(state):
-    """Deleting under a running render would remove files it is still writing."""
-    store = jobs.Store()
-    job, d = _job_with_workdir(store, state=state, age=10_000)
-    assert store.sweep(ttl=1)["reclaimed"] == 0
-    assert os.path.exists(d) and job.workdir == d
-
-
-def test_the_job_survives_its_workspace():
-    """A caller polling an old id still gets its state and check report; it is
-    the artefacts that expire."""
-    store = jobs.Store()
-    job, _ = _job_with_workdir(store, age=10_000)
-    job.checks = {"passed": 22, "failed": 0}
-    store.sweep(ttl=1)
-    assert store.get(job.id) is job
-    assert store.get(job.id).checks == {"passed": 22, "failed": 0}
+# --- 3 and 4. admission and workspace reclamation -------------------------
+#
+# 0.14 built both by hand (capacity.Gate, jobs.Store.sweep). Since 0.15 they are
+# the dispatch kit's — Admission bounds the queue, the executor's retention and
+# the Sweeper reclaim — and test_service.py holds the same properties against the
+# running service: the queue refuses with 429 and Retry-After, a refused
+# submission gives its slot back, /health reports capacity, and an expired
+# artefact is a 410 while its job stays readable.
 
 
 def test_a_bad_key_is_reported_as_a_bad_key_even_when_unconfigured(monkeypatch):

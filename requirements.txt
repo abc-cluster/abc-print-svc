@@ -6,3 +6,8 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 python-multipart>=0.0.9
 boto3>=1.34
+# abc-dispatch's own dependencies. The wheel itself is installed with --no-index
+# from vendor-wheels/ (it is private); its dependencies are public and come from
+# here, so the install step that fetches is the one that can.
+httpx>=0.27
+pydantic>=2.6

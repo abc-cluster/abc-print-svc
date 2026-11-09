@@ -58,8 +58,15 @@ def _safe_join_rel(root: str, name: str) -> str:
     return dest
 
 
-def create(root: str) -> dict:
-    """Build the directory skeleton and return the paths the caller writes into."""
+def create(root: str, *, assets: bool = True, profile_dir: str | None = None) -> dict:
+    """Build the directory skeleton and return the paths the caller writes into.
+
+    ``assets=False`` builds the same structure without copying the profile and
+    pipeline in. The front door uses it to run every bundle check — names,
+    traversal, chapters, the identity file — before admitting a request, in an
+    image that deliberately carries no profile or pipeline (they live only in the
+    worker image, so nothing private can ship with the public API).
+    """
     paths = {
         "repo": root,
         "thesis": os.path.join(root, "writeup", "thesis"),
@@ -73,12 +80,15 @@ def create(root: str) -> dict:
     paths["bib_per_area_dir"] = paths["thesis"]
     for p in paths.values():
         os.makedirs(p, exist_ok=True)
+    if not assets:
+        return paths
 
-    if not os.path.isdir(PROFILE_DIR):
+    profile_dir = profile_dir or PROFILE_DIR
+    if not os.path.isdir(profile_dir):
         raise BundleError(
-            f"profile not found at {PROFILE_DIR}; the image was built without one")
+            f"profile not found at {profile_dir}; the image was built without one")
     # dirs_exist_ok so the skeleton above does not collide with the profile copy
-    shutil.copytree(PROFILE_DIR, paths["quarto"], dirs_exist_ok=True)
+    shutil.copytree(profile_dir, paths["quarto"], dirs_exist_ok=True)
 
     if not os.path.isdir(PIPELINE_DIR):
         raise BundleError(f"pipeline scripts not found at {PIPELINE_DIR}")
@@ -147,7 +157,7 @@ def detected_chapters(paths: dict) -> list[str]:
     return seen
 
 
-def create_quarto(root: str, profile_dir: str) -> dict:
+def create_quarto(root: str, profile_dir: str, *, assets: bool = True) -> dict:
     """Workspace for the quarto-render engine.
 
     Far simpler than the thesis layout, because the engine is: everything the
@@ -179,6 +189,8 @@ def create_quarto(root: str, profile_dir: str) -> dict:
     paths["inserted"] = paths["src"]
     for p in paths.values():
         os.makedirs(p, exist_ok=True)
+    if not assets:
+        return paths
 
     if not os.path.isdir(profile_dir):
         raise BundleError(f"profile directory not found: {profile_dir}")
@@ -197,7 +209,8 @@ def create_quarto(root: str, profile_dir: str) -> dict:
 
 
 def create_quarto_from_archive(root: str, profile_dir: str, zip_path: str,
-                               entry: str | None = None) -> tuple[dict, dict]:
+                               entry: str | None = None, *,
+                               assets: bool = True) -> tuple[dict, dict]:
     """Workspace built from a client zip, with the archive's layout PRESERVED.
 
     The project-garden manuscript keeps sources in src/ and figures in
@@ -223,6 +236,8 @@ def create_quarto_from_archive(root: str, profile_dir: str, zip_path: str,
     paths["bib_per_area_dir"] = paths["src"]
     os.makedirs(paths["src"], exist_ok=True)
     os.makedirs(paths["build"], exist_ok=True)
+    if not assets:
+        return paths, manifest
 
     if not os.path.isdir(profile_dir):
         raise BundleError(f"profile directory not found: {profile_dir}")
@@ -303,7 +318,8 @@ def _placed(mapping: dict, bucket: str, src: str, dest: str) -> None:
     mapping.setdefault(bucket, []).append({"from": src, "to": dest})
 
 
-def create_from_archive(root: str, zip_path: str) -> tuple[dict, dict, dict]:
+def create_from_archive(root: str, zip_path: str, *, assets: bool = True,
+                        profile_dir: str | None = None) -> tuple[dict, dict, dict]:
     """Build the thesis pipeline's workspace from a project-garden zip.
 
     Accepted shape, matching the garden manuscript template:
@@ -325,7 +341,7 @@ def create_from_archive(root: str, zip_path: str) -> tuple[dict, dict, dict]:
     os.makedirs(staging, exist_ok=True)
     manifest = archive.extract(zip_path, staging)
 
-    paths = create(root)
+    paths = create(root, assets=assets, profile_dir=profile_dir)
     mapping: dict = {}
     ignored: list[str] = []
 

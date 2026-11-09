@@ -8,3 +8,4 @@ _out/
 pipeline/
 profiles/su-fmhs/
 examples/garden-manuscript-demo.zip
+vendor-wheels/
