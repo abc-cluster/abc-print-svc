@@ -3,11 +3,20 @@
 What this deployment does when several people compile at once, and what it
 refuses to do.
 
+> **Since 0.15** each build runs as its own Nomad job, and admission, the queue,
+> retention and the run store belong to [abc-dispatch](https://github.com/abc-cluster/abc-dispatch).
+> The limits below are unchanged (2 building, 8 waiting, outputs kept 6 hours).
+> Three things are new: runs are kept in a durable store, so a restart of the
+> service re-adopts builds in flight instead of losing every job; the queue now
+> has a **per-caller fair share**, so one token cannot fill it while others wait
+> (`429 caller_quota_exceeded`, as opposed to `429 queue_full`); and a 429 body
+> says which it is. `GET /v1/limits` reports your own position.
+
 ## It renders two documents at a time, and queues the rest
 
 ```bash
 curl -s $SVC/health | jq .capacity
-# {"max_renders": 2, "max_queued": 8, "rendering": 2, "waiting": 3, "admitted": 5}
+# {"max_renders": 2, "max_queued": 8, "running": 2, "queued": 3}
 ```
 
 Two, because the allocation has two CPUs. Raising it does not raise throughput —
@@ -88,7 +97,10 @@ dropped the only record of where the directory was.
 
 A render in flight is never swept.
 
-## There is no per-token quota, and one token can fill the queue
+## Before 0.15 there was no per-token quota, and one token could fill the queue
+
+*Superseded: 0.15 adds abc-dispatch's work-conserving fair share. What follows is
+why it was needed, as measured on 0.13.*
 
 This is a known limitation, not an oversight waiting to be discovered. The 2 + 8
 admission bound is **global**: it protects the *deployment* from being overloaded.
@@ -141,6 +153,7 @@ The design options, their costs, and what to measure first are in
 
 ## What is still true
 
-- **One replica, in-process job store.** A second replica would not recognise the
-  first's job ids. Two cores and a semaphore are the constraint today, not the
-  store; a shared store is the change to make when the CPU budget grows.
+- **One front door.** Runs are kept in SQLite on the volume shared with the
+  workers, so they survive a restart; a second front door would not share that
+  store. Builds already run in their own jobs, so scaling the work is a matter of
+  `ABCPRINT_MAX_RENDERS` and node capacity, not of the front door.

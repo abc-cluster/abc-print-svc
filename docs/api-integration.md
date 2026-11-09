@@ -312,7 +312,6 @@ forever or give up on a fixable permissions problem.
 
 ## 11. Not implemented yet
 
-Stated so a client is not written against them: no authentication, no webhooks, no
-durable job store (in-process, bounded, lost on restart), no retention policy, no
-PDF password protection, no `/validate` endpoint yet — the plan is source-only
+Stated so a client is not written against them: no webhooks, no PDF password
+protection, no `/validate` endpoint yet — the plan is source-only
 validation that is honest about the page-based length rule needing a render.

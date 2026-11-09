@@ -191,6 +191,9 @@ ENV PYTHONPATH=/srv/src \
 # What this worker can do, measured in it, for the front door to report.
 RUN PYTHONPATH=/srv/src python3 -m abcprint.capabilities > /srv/capabilities.json \
  && python3 -c "import json; d=json.load(open('/srv/capabilities.json')); print('capabilities:', sorted(d['profiles']), d['engines_available'])"
+# Read by /health when this image serves the API itself (one host, the in-process
+# executor) rather than being dispatched.
+ENV ABCPRINT_CAPABILITIES=/srv/capabilities.json
 
 # Render unprivileged: arbitrary markdown is arbitrary input, and the service
 # must not be a foothold. Network egress, read-only root and resource caps are
