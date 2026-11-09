@@ -1,11 +1,33 @@
-# Building the image
+# Building the images
 
 ```bash
 git clone https://github.com/abc-cluster/abc-print-svc.git
 cd abc-print-svc
-./docker/vendor-pipeline.sh
-docker build -t abc-print-svc:local -f Containerfile .
-docker run --rm -p 8080:8080 abc-print-svc:local
+./docker/vendor-pipeline.sh        # optional: the thesis engine
+./docker/vendor-dispatch.sh        # abc-dispatch, from its pinned tag
+docker build --target worker -t abc-print-worker:local -f Containerfile .
+docker build --target api    -t abc-print-svc:local    -f Containerfile .
+```
+
+Two images from one file, built together:
+
+- **`worker`** — quarto, typst, fonts, profiles, the thesis pipeline. A build runs
+  in it, one Nomad job per run. Its build measures what it can do into
+  `/srv/capabilities.json`.
+- **`api`** — the front door. Copies that record and the doc assets from the
+  worker stage of the same build, and nothing else of it: no profile, pipeline or
+  toolchain. Its build fails if any is present.
+
+`vendor-dispatch.sh` needs a local clone of the private `abc-cluster/abc-dispatch`
+(default `~/projects/abc-dispatch`); it builds the wheel from the tag, not from the
+working tree, and records the commit beside it.
+
+To run everything on one machine without Nomad, serve the API from the worker
+image with the in-process executor:
+
+```bash
+docker run --rm -p 8080:8080 -e ABC_PRINT_SVC_AUTH=disabled abc-print-worker:local \
+  python3 -m uvicorn --factory abcprint.service:build --host 0.0.0.0 --port 8080
 ```
 
 That is the whole thing. It works from a clean clone with nothing else on disk.
@@ -77,18 +99,19 @@ Fixture content ships in `examples/`, so this needs nothing private. It checks
 health, renders the demo manuscript, and verifies the output actually contains
 its citations, cross-references and figure.
 
-## Just use the published image
+## Just use the published images
 
 Building is only necessary if you are changing the service:
 
 ```bash
-docker pull ghcr.io/abc-cluster/abc-print-svc:latest
+docker pull ghcr.io/abc-cluster/abc-print-svc:0.15.0      # the front door (public)
+docker pull ghcr.io/abc-cluster/abc-print-worker:0.15.0   # the worker
 ```
 
-The image is **multi-arch** — `linux/amd64` and `linux/arm64` — so an Apple
-Silicon or ARM Linux machine pulls a native image and needs no emulation.
+0.15.0 is published for `linux/amd64`. Releases up to 0.14.1 were multi-arch
+(`linux/amd64` and `linux/arm64`).
 
-It is private to the `abc-cluster` org, so authenticate once:
+The worker package is not public, so authenticate once:
 
 ```bash
 echo "$GITHUB_TOKEN" | docker login ghcr.io -u <your-github-username> --password-stdin
@@ -138,4 +161,60 @@ A typical local run with delivery enabled:
 docker run --rm -p 8080:8080 \
   -v "$HOME/Downloads":/srv/downloads \
   ghcr.io/abc-cluster/abc-print-svc:latest
+```
+
+### Front door (`api`) only
+
+| variable | default | purpose |
+|---|---|---|
+| `ABCPRINT_EXECUTOR` | `in-process` | `nomad` to dispatch each run; `in-process` only in the worker image |
+| `ABCPRINT_NOMAD_ADDR` | — | the Nomad HTTP API, as reached from the task |
+| `ABCPRINT_NOMAD_TOKEN_FILE` | — | the credential; on the cluster, the task's workload identity |
+| `ABCPRINT_DISPATCH_NAMESPACE` · `ABCPRINT_DISPATCH_JOB` | `svc-print` · `abc-print-run` | where the workers are |
+| `ABCPRINT_DISPATCH_ROOT` | `/srv/dispatch/runs` | run directories, on the volume shared with the workers at the same path |
+| `ABCPRINT_DATA_DIR` | `/srv/dispatch/state` | the run store (SQLite) and uploads |
+| `ABCPRINT_JURISDICTION` | — | stamped on every dispatch |
+| `ABCPRINT_MAX_RENDERS` · `ABCPRINT_MAX_QUEUED` | `2` · `8` | how many build at once, how many may wait |
+| `ABCPRINT_ARTIFACT_TTL_S` | `21600` | how long outputs are kept |
+| `ABCPRINT_TRUSTED_PROXIES` | unset | CIDRs whose `X-Forwarded-For` is believed, for rate limits |
+
+## Deploying on Nomad
+
+Three objects, all in `nomad/`:
+
+```bash
+# 1. the workers' namespace, which no member policy grants anything in
+nomad namespace apply svc-print
+# 2. the worker: a parameterized job the front door dispatches, one child per run
+nomad job run -var image=ghcr.io/abc-cluster/abc-print-worker:<v> nomad/abc-print-run.nomad.hcl
+# 3. the front door, and what its workload identity may do
+nomad job run -var image=ghcr.io/abc-cluster/abc-print-svc:<v> \
+              -var tokens="<ABC_PRINT_SVC_TOKEN hashes>" nomad/abc-print-svc.nomad.hcl
+nomad acl policy apply -namespace abc-apps -job app-mbhg-bioinformatics-abc-print-svc \
+              abc-print-svc-dispatch nomad/front-door-dispatch.policy.hcl
+```
+
+The front door and the workers mount the same host volume (`scratch`) at the same
+path, because a run's directory is passed to the worker as an absolute path. The
+front door's prestart task creates its directory there, owned by the UID both
+images run as. `abc app deploy` is not used: it cannot mount a host volume.
+
+## Testing dispatch locally
+
+`nomad/dev-agent.hcl` is a throwaway agent with ACLs on, the docker driver and a
+`scratch` volume, so the front door's workload-identity policy is what authorises
+its dispatches — as on the cluster:
+
+```bash
+nomad agent -dev -config nomad/dev-agent.hcl -data-dir "$(mktemp -d)" &
+export NOMAD_ADDR=http://127.0.0.1:14646
+export NOMAD_TOKEN=$(nomad acl bootstrap -json | jq -r .SecretID)
+nomad namespace apply svc-print && nomad namespace apply abc-apps
+nomad job run -var image=abc-print-worker:local -var node_pool=default \
+  -var 'datacenters=["dc1"]' nomad/abc-print-run.nomad.hcl
+nomad job run -var image=abc-print-svc:local -var node_pool=default -var 'datacenters=["dc1"]' \
+  -var nomad_addr=http://host.docker.internal:14646 -var tokens="$(cat my-token-entry)" \
+  nomad/abc-print-svc.nomad.hcl
+nomad acl policy apply -namespace abc-apps -job app-mbhg-bioinformatics-abc-print-svc \
+  abc-print-svc-dispatch nomad/front-door-dispatch.policy.hcl
 ```

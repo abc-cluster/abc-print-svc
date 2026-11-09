@@ -20,8 +20,29 @@ Two engines, two profiles, verified against real documents rather than fixtures:
 - a **manuscript** — the nf-nomad bioRxiv bundle, 28 pages matching its archived
   build exactly, PDF + DOCX in ~9 s
 
-Not yet: authentication, webhooks, a durable job store, retention, PDF password
-protection, or a `/validate` endpoint.
+Not yet: webhooks, PDF password protection, or a `/validate` endpoint.
+
+## How it runs
+
+Each build is **its own Nomad job**, in a container that carries the toolchain —
+the way Nextflow runs each task. Two images, built together from one Containerfile:
+
+| image | target | what it is |
+|---|---|---|
+| `ghcr.io/abc-cluster/abc-print-svc` | `api` | the **front door**, on [abc-dispatch](https://github.com/abc-cluster/abc-dispatch): validates, admits, queues, and dispatches each run. Carries **no** profile, pipeline or toolchain. |
+| `ghcr.io/abc-cluster/abc-print-worker` | `worker` | the **compilation pipeline**: quarto, typst, fonts, profiles, the thesis pipeline. Runs one build per dispatched job, with no network. |
+
+The front door dispatches children of an operator-registered parameterized job,
+`abc-print-run`, in a namespace no member can submit to (`nomad/`); a request can
+fill only its `meta` slots, never choose an image or a volume. Its Nomad
+credential is its own workload identity, granted dispatch by a job-scoped policy —
+there is no token to store. Runs are kept in a durable store, so a restart
+re-adopts builds in flight; admission bounds the queue with a per-caller fair
+share; outputs expire after their retention window.
+
+Why two images: on 2026-11-08 private render logs shipped in the public API image,
+because compilation assets were vendored into it. The API image now has nowhere
+for them to come from, and its build checks that it carries none.
 
 ## Documentation
 
@@ -40,12 +61,21 @@ protection, or a `/validate` endpoint.
 
 ## Quick start
 
+On one machine, without Nomad, the worker image serves the API itself and builds
+in-process:
+
 ```bash
-docker run --rm -p 8080:8080 ghcr.io/abc-cluster/abc-print-svc:latest
+docker run --rm -p 8080:8080 -e ABC_PRINT_SVC_AUTH=disabled \
+  -e ABCPRINT_CAPABILITIES=/srv/capabilities.json \
+  ghcr.io/abc-cluster/abc-print-worker:0.15.0 \
+  python3 -m uvicorn --factory abcprint.service:build --host 0.0.0.0 --port 8080
 ./examples/run-demo.sh          # confirm it works, using fixture content
 ```
 
-The image is multi-arch (`linux/amd64`, `linux/arm64`).
+(`ABC_PRINT_SVC_AUTH=disabled` is for a local machine only; `/health` says so.)
+On the cluster, deploy the two jobs in `nomad/` — see
+[docs/building.md](docs/building.md#deploying-on-nomad). 0.15.0 is published for
+`linux/amd64`.
 
 | surface | where |
 |---|---|
@@ -83,6 +113,15 @@ faculty front matter.
 A profile with no rules reports `compliant: null`, never `true`.
 
 ## Endpoints
+
+Two fronts onto the same runs. A 0.14 job id is a native run id.
+
+**Native** (abc-dispatch): `POST /v1/uploads`, then `POST /v1/{thesis|manuscript|equivalence}/runs`;
+`GET …/runs/{id}` (state, `outcome` with `compliant`, `checks`, `manifest`),
+`…/status`, `…/log`, `…/outputs/{name}`, `…/bundle`, `POST …/cancel`, `DELETE …`;
+`/v1/limits`, `/readyz`, `/service-info`. Send an `Idempotency-Key` on create.
+
+**0.14**, unchanged for existing clients:
 
 | method | path | purpose |
 |---|---|---|
@@ -175,13 +214,16 @@ against a locally rendered copy.
 ## Build
 
 ```bash
-./docker/vendor-pipeline.sh
-docker build -t abc-print-svc:local -f Containerfile .
+./docker/vendor-pipeline.sh       # the thesis pipeline + SU/FMHS profile (optional)
+./docker/vendor-dispatch.sh       # abc-dispatch, as a wheel from its pinned tag
+docker build --target worker -t abc-print-worker:local -f Containerfile .
+docker build --target api    -t abc-print-svc:local    -f Containerfile .
 ```
 
-Works from a clean clone. The thesis pipeline lives in a separate private repo and
-is **optional** — without it the image runs everything except `POST /compile`, and
-`/health` reports `engines_available`. Full detail, including the BuildKit stall
+The thesis pipeline lives in a separate private repo and is **optional** — without
+it the worker runs everything except the thesis engine, and `/health` reports
+`engines_available`. abc-dispatch is private too, so it is vendored as a wheel
+rather than installed from git in the build. Full detail, including the BuildKit stall
 and CORS, is in **[docs/building.md](docs/building.md)**.
 
 ## Not in scope
