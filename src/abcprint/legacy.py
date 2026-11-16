@@ -31,6 +31,11 @@ written against 0.14 does not break. Both carry `Deprecation` (RFC 9745) and a
 `Link` to the docs; `Sunset` (RFC 8594) is sent once ABCPRINT_V0_SUNSET is set.
 A bare-path response also links its /v0 successor. `/health` is not part of
 this: it is the deployment's health check and stays where it is.
+
+Removed in 0.16.0: `POST /equivalence` (it held the request open for the whole
+comparison; use `/v1/equivalence/runs`). `/v0/toolchain` and `/v0/fonts` stay
+until the sunset but now answer from the same code as `/svc/v1/toolchain` and
+`/svc/v1/fonts`.
 """
 from __future__ import annotations
 
@@ -50,18 +55,17 @@ import yaml
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from starlette.datastructures import MutableHeaders
 from fastapi.responses import FileResponse, JSONResponse
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import ValidationError
 
 from abc_dispatch import ApiError, State
 from abc_dispatch.ids import new_id
-from abc_dispatch.states import TERMINAL
 from abc_dispatch.store import RunRecord, UploadRecord
 
-from . import auth, capabilities, delivery, profile as profiles, workspace
-from .models import (DeliveryResult, Equivalence, FontHealth, Health, Job as JobModel,
+from . import auth, capabilities, delivery, info, profile as profiles, workspace
+from .info import scope_guard
+from .models import (DeliveryResult, FontHealth, Health, Job as JobModel,
                      JobList, ProfileList, Toolchain as ToolchainModel)
-from .service import (EquivalenceRequest, FileRef, ManuscriptRequest, ThesisRequest, _Refused,
+from .service import (FileRef, ManuscriptRequest, ThesisRequest, _Refused,
                       _err, prepare_manuscript, prepare_thesis)
 
 _STATE = {
@@ -70,11 +74,6 @@ _STATE = {
     State.COMPLETE: "succeeded",
 }
 _DISK_NAME = re.compile(r"[^A-Za-z0-9._-]")
-
-_bearer = HTTPBearer(
-    scheme_name="abc-print-svc token", bearerFormat="abcp_…", auto_error=False,
-    description=("A token minted with `python -m abcprint.tokens new <label>`. Scopes decide "
-                 "what it opens: `compile`, `read`, `deliver`."))
 
 AUTH_RESPONSES: dict = {
     401: {"description": "No token, or one this deployment does not recognise. Fix the token."},
@@ -197,29 +196,9 @@ def _requested_options(kind: str, req: dict) -> dict:
 
 def mount_legacy(app, *, store, storage, admission, executor, kinds: dict, authenticator,
                  settings, cors_origins: list[str], env: Mapping[str, str]) -> None:
-    limiter = app.state.rate_limiter
     router = APIRouter()
-    eq_wait_s = float(env.get("ABCPRINT_EQUIVALENCE_WAIT_S", "600"))
 
-    def client_ip(request: Request) -> str:
-        return getattr(request.state, "client_ip", None) or limiter.client_ip(
-            request.client.host if request.client else None, request.headers.get("x-forwarded-for"))
-
-    def require(scope: str):
-        def dep(request: Request,
-                _: Optional[HTTPAuthorizationCredentials] = Depends(_bearer)) -> auth.Principal:
-            ip = client_ip(request)
-            limiter.auth_failures.blocked(ip)
-            try:
-                p = authenticator.principal(request)
-            except ApiError as e:
-                if e.status == 401:
-                    limiter.auth_failures.spend(ip)
-                raise
-            authenticator.require(p, scope)
-            limiter.for_caller(request.method).take(p.label)
-            return p
-        return dep
+    require = scope_guard(app, authenticator)
 
     # --- uploads and submission, through the kit's own pieces ----------------
 
@@ -330,44 +309,24 @@ def mount_legacy(app, *, store, storage, admission, executor, kinds: dict, authe
              summary="Can this deployment build?",
              responses={503: {"description": "Deployment cannot build; `problems` names each reason."}})
     def health():
-        rec = capabilities.load()
-        if rec is None:
-            problems = [f"no worker capability record ({capabilities.ENV_VAR}); this front door "
-                        f"cannot tell what its worker can build"]
-            tc, fh, engines = {}, {"ok": False}, {}
-        else:
-            fh = capabilities.font_health(rec["fonts"]["required"])
-            tc = rec["toolchain"]
-            engines = rec["engines_available"]
-            problems = list(tc.get("problems") or []) + \
-                ([] if fh["ok"] else [f"fonts unavailable: {fh['missing']}"])
-        totals = store.totals()
-        body = {"ok": not problems, "problems": problems,
-                "toolchain": {k: v for k, v in tc.items() if k not in ("problems", "typst_mismatch")},
-                "typst_mismatch": tc.get("typst_mismatch"), "fonts": fh,
-                "cors_allowed_origins": cors_origins, "engines_available": engines,
-                "auth": authenticator.state(),
-                "capacity": {"max_renders": admission.max_running,
-                             "max_queued": admission.max_queued, **totals},
-                "executor": executor.name, "store": store.kind}
+        problems, engines = info.health_problems()
+        mode = authenticator.state()
+        warnings = [mode["warning"]] if mode.get("warning") else []
+        body = {"ok": not problems, "problems": problems, "warnings": warnings,
+                "engines_available": engines}
         return JSONResponse(body, status_code=200 if not problems else 503)
 
     @router.get("/toolchain", tags=["v0 · health"], response_model=ToolchainModel,
              summary="What rendered this document?", responses=AUTH_RESPONSES)
     def get_toolchain(p: auth.Principal = Depends(require("read"))):
-        rec = capabilities.load() or {}
-        tc = rec.get("toolchain") or {}
-        return {**{k: v for k, v in tc.items() if k != "problems"},
-                "pipeline": rec.get("pipeline")}
+        return info.toolchain()
 
     @router.get("/fonts", tags=["v0 · health"], response_model=FontHealth,
              summary="Which family will actually render?", responses=AUTH_RESPONSES)
     def get_fonts(family: list[str] | None = Query(
             default=None, description="Families to resolve. Defaults to the profile's required set."),
             p: auth.Principal = Depends(require("read"))):
-        rec = capabilities.load() or {}
-        return capabilities.font_health(family or (rec.get("fonts") or {}).get("required")
-                                        or capabilities.REQUIRED_FONTS)
+        return info.fonts(family)
 
     @router.get("/profiles", tags=["v0 · compile"], response_model=ProfileList,
              summary="Profiles this deployment offers", responses=AUTH_RESPONSES)
@@ -591,37 +550,6 @@ def mount_legacy(app, *, store, storage, admission, executor, kinds: dict, authe
                        f'unknown destination {destination!r}; expected "downloads" or "minio"')
         except delivery.DeliveryError as exc:
             raise _err(503, "destination_unavailable", str(exc))
-
-    # --- equivalence: a run, answered synchronously as 0.14 did -----------------
-
-    @router.post("/equivalence", tags=["v0 · verification"], response_model=Equivalence,
-              summary="Are these two builds the same document?",
-              responses={422: {"description": "One of the uploads could not be read as a PDF."},
-                         **AUTH_RESPONSES})
-    async def post_equivalence(
-        a: UploadFile = File(..., description="First PDF."),
-        b: UploadFile = File(..., description="Second PDF. May share a filename with the first."),
-        dpi: int = Query(72, ge=36, le=300), sample: int = Query(6, ge=0, le=2000),
-        p: auth.Principal = Depends(require("read")),
-    ):
-        ra, _ = await stage(p.label, a, "a")
-        rb, _ = await stage(p.label, b, "b")
-        req = EquivalenceRequest(a=ra.upload_id, b=rb.upload_id, dpi=dpi, sample=sample)
-        run = submit(p, "equivalence", req, [ra, rb])
-        import asyncio
-        deadline = time.monotonic() + eq_wait_s
-        while run.state not in TERMINAL:
-            if time.monotonic() > deadline:
-                raise _err(504, "timed_out",
-                           f"the comparison did not finish within {eq_wait_s:g}s; it is run "
-                           f"{run.run_id} at /v1/equivalence/runs/{run.run_id}")
-            await asyncio.sleep(0.5)
-            run = store.get_run(run.run_id, p.label) or run
-        if run.state == State.COMPLETE:
-            return run.outcome
-        if run.state == State.EXECUTOR_ERROR:
-            raise _err(422, "invalid_request", run.state_reason or "could not read one of the PDFs")
-        raise _err(503, "comparison_failed", run.state_reason or f"the comparison {run.state.value}")
 
     # The documented home is /v0. The same routes stay at their 0.14 paths, out of
     # the schema, so a 0.14 client keeps working until the aliases are sunset.

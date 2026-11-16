@@ -47,8 +47,8 @@ Browser clients can read these (they are in the CORS `expose_headers`).
 | `GET /v0/jobs/{id}/artifacts/{name}` | `GET /v1/{kind}/runs/{id}/outputs/{name}`; `…/bundle` for all outputs as one zip |
 | a browser link to an artefact | `POST …/runs/{id}/tickets` `{"name": "<output>"}` → a one-use, 60-second `href` that needs no header |
 | `GET /v0/profiles` | `GET /v1/{kind}/options` — profiles for that kind, and the refused `quarto_metadata` keys |
-| `GET /v0/toolchain`, `/v0/fonts` | `GET /health` carries both |
-| `POST /v0/equivalence` (waits for the answer) | uploads, then `POST /v1/equivalence/runs` `{"a": "upl_…", "b": "upl_…"}`; poll; the report is the run's `outcome` |
+| `GET /v0/toolchain`, `/v0/fonts` | `GET /svc/v1/toolchain`, `/svc/v1/fonts` — the same bodies |
+| `POST /v0/equivalence` (**removed in 0.16.0**) | uploads, then `POST /v1/equivalence/runs` `{"a": "upl_…", "b": "upl_…"}`; poll; the report is the run's `outcome` |
 | `POST /v0/jobs/{id}/deliver` | no v1 equivalent — download the output instead |
 | — | `POST …/runs/{id}/cancel`, `DELETE …/runs/{id}`, `GET …/runs/{id}/log`, `GET /v1/limits` |
 
@@ -68,9 +68,11 @@ Browser clients can read these (they are in the CORS `expose_headers`).
 - **Uploads are consumed** by the run that uses them: to resubmit, upload again.
 - **Retries.** Send an `Idempotency-Key` header on create; a retried request with
   the same key returns the first run instead of creating a second.
-- **Scopes** are unchanged: `compile` to upload and create, `read` to read and to
-  create equivalence runs. Note: a `read`-only token cannot `POST /v1/uploads`, so
-  it can compare PDFs only through `/v0/equivalence`.
+- **Scopes** are unchanged: `compile` to upload and create, `read` to read.
+  Comparing two PDFs needs uploads, so it needs `compile` in practice.
+- **Namespaces.** `/v1/…` is the abc-dispatch contract shared by every service on
+  the kit; `/svc/v1/…` is what this service adds (toolchain, fonts). They are
+  versioned separately.
 
 ---
 
@@ -124,7 +126,7 @@ A token carries some subset of three:
 
 | scope | endpoints |
 |---|---|
-| `read` | `/v0/profiles` `/v0/toolchain` `/v0/fonts` `/v0/jobs` `/v0/jobs/{id}` artefacts `/v0/equivalence` |
+| `read` | `/svc/v1/toolchain` `/svc/v1/fonts` `/v0/profiles` `/v0/toolchain` `/v0/fonts` `/v0/jobs` `/v0/jobs/{id}` artefacts, every `GET /v1/…` |
 | `compile` | `/v0/compile` `/v0/compile/archive` `/v0/compile/manuscript` |
 | `deliver` | `/v0/jobs/{id}/deliver` `/v0/delivery/destinations` |
 
@@ -148,8 +150,8 @@ submission is refused with **429** and `Retry-After`. The queue is shared, so a
 measured, not hypothetical: one token submitting in a loop held all ten admission
 slots, and the next caller's first request was refused. Back off on 429.
 
-`GET /health` needs no token and reports `auth` and `capacity`, so it answers both
-"which deployment am I pointed at" and "is it busy" without credentials.
+`GET /health` needs no token and says whether the deployment can build. How busy
+it is, and your own share, is `GET /v1/limits` (token required).
 
 ---
 
@@ -296,7 +298,8 @@ resource dictionaries in per-process order and stamps a random instance id.
 `SOURCE_DATE_EPOCH` is pinned by the service, which removes the timestamps but not
 the ordering. A checksum comparison will therefore report a false difference.
 
-Use `POST /v0/equivalence` instead. It compares on four planes — page count, extracted
+Use an equivalence run instead (`POST /v1/equivalence/runs` with two uploads; the
+report is the run's `outcome`). It compares on four planes — page count, extracted
 text with layout, rendered pixels, and metadata with volatile fields excluded **by
 name** so new drift still fails.
 
@@ -337,7 +340,7 @@ Not cosmetic. Measured on the same sources:
 | manuscript, without it | 21 |
 
 If a profile's faculty rule is measured in pages, a substituted build cannot be used
-to measure it. `GET /v0/fonts` and the job manifest both report what actually resolved;
+to measure it. `GET /svc/v1/fonts` and the job manifest both report what actually resolved;
 `manifest.fonts.substituted` empty means no substitution occurred.
 
 ## 10. Error shapes

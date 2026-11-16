@@ -43,7 +43,7 @@ a `pypdf` too old to merge (internal links would silently dangle), and fonts tha
 are not installed.
 
 ```bash
-curl -s http://localhost:8080/v0/fonts | jq '.resolutions[] | {requested, resolved, metric_compatible}'
+curl -s http://localhost:8080/svc/v1/fonts | jq '.resolutions[] | {requested, resolved, metric_compatible}'
 ```
 
 If `resolved` differs from `requested` you are getting a **substitution**. The
@@ -258,8 +258,13 @@ bytes differ at identical length while the document is unchanged. Compare
 properly instead:
 
 ```bash
-curl -s -X POST "localhost:8080/v0/equivalence?sample=8" \
-  -F "a=@build-1.pdf" -F "b=@build-2.pdf" | jq '{equivalent, pages, text_equal, pixel_mismatches}'
+A=$(curl -s -H "Authorization: Bearer $TOKEN" -F "file=@build-1.pdf" $SVC/v1/uploads | jq -r .upload_id)
+B=$(curl -s -H "Authorization: Bearer $TOKEN" -F "file=@build-2.pdf" $SVC/v1/uploads | jq -r .upload_id)
+RUN=$(curl -s -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"a\":\"$A\",\"b\":\"$B\",\"sample\":8}" $SVC/v1/equivalence/runs | jq -r .run_id)
+until [ "$(curl -s -H "Authorization: Bearer $TOKEN" $SVC/v1/equivalence/runs/$RUN/status | jq -r .state)" = complete ]; do sleep 2; done
+curl -s -H "Authorization: Bearer $TOKEN" $SVC/v1/equivalence/runs/$RUN \
+  | jq '.outcome | {equivalent, pages, text_equal, pixel_mismatches}'
 ```
 
 This is also how you answer whether a font substitution moved your pagination:

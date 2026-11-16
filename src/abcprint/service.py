@@ -15,8 +15,8 @@ Three kinds, because they are three different things with three request schemas:
 ``/v1/{kind}/runs``.
 
 The 0.14 API — ``/compile``, ``/compile/archive``, ``/compile/manuscript``,
-``/jobs``, artefacts, delivery, ``/profiles``, ``/equivalence``, ``/toolchain``
-and ``/fonts`` — lives under ``/v0`` since 0.15.1, with the bare paths kept as
+``/jobs``, artefacts, delivery, ``/profiles``, ``/toolchain`` and ``/fonts`` —
+lives under ``/v0`` since 0.15.1, with the bare paths kept as
 deprecated aliases (see legacy.py). It is kept, request for request, because an editor plugin and scripts
 call it. It is a second front onto the SAME runs: a multipart request is stored
 as uploads and created as a run through the same validation, admission and
@@ -61,7 +61,7 @@ from . import (archive, auth, capabilities, compile as compiler, delivery, equiv
                identity, profile as profiles, workspace)
 from .runner import TimedOut
 
-__version__ = "0.15.1"
+__version__ = "0.16.0"
 
 GRACE_S = float(os.environ.get("ABCPRINT_GRACE_S", "30"))
 KINDS = ("thesis", "manuscript", "equivalence")
@@ -450,7 +450,7 @@ def make_kind() -> Kind:
 def _native_scope(request: Request) -> str:
     path, method = request.url.path, request.method.upper()
     if path.startswith("/v1/equivalence/"):
-        return "read"           # /equivalence was a read-scope call in 0.14
+        return "read"           # comparing builds was a read-scope call in 0.14
     if method == "GET":
         return "read"
     if path.endswith("/tickets"):
@@ -580,7 +580,8 @@ reports. Two ways in, onto the same runs:
 
 * the **native API** — upload with `POST /v1/uploads`, then `POST /v1/thesis/runs`
   or `POST /v1/manuscript/runs`, poll `…/status`, read `outcome` (`compliant`,
-  `checks`, `manifest`), fetch `outputs`;
+  `checks`, `manifest`), fetch `outputs`. `GET /svc/v1/toolchain` and `/svc/v1/fonts`
+  say what renders here; `/v1/limits` what you may submit;
 * the **0.14 API, under `/v0`** — `POST /v0/compile`, `/v0/compile/archive`,
   `/v0/compile/manuscript`, poll `GET /v0/jobs/{id}`, download
   `/v0/jobs/{id}/artifacts/{name}`. A job id is a run id. **Deprecated**: new
@@ -593,7 +594,8 @@ Tokens start `abcp_` and carry scopes: `read`, `compile`, `deliver`.
 can be produced and still fail its checks, which is what `compliant` is for.
 
 Byte comparison is deliberately not offered: two builds of a 230-page thesis
-differ in ~84,000 bytes while being the same document, so `/equivalence` decides
+differ in ~84,000 bytes while being the same document, so an equivalence run
+(`POST /v1/equivalence/runs`) decides
 on four planes — page count, text, pixels, stable metadata."""
 
 
@@ -645,6 +647,8 @@ def build(env: Mapping[str, str] = os.environ):
     if has_vendor:
         app.mount("/vendor", StaticFiles(directory=vendor), name="vendor")
 
+    from .info import mount_v1_info, scope_guard
+    mount_v1_info(app, scope_guard(app, authenticator))
     from .legacy import mount_legacy
     mount_legacy(app, store=store, storage=storage, admission=admission, executor=executor,
                  kinds={k.name: k for k in kinds}, authenticator=authenticator,

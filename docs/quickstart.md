@@ -20,7 +20,7 @@ TOKEN=abcp_your_token_here
 `/health` is the only endpoint that needs no token.
 
 ```bash
-curl -s $SVC/health | jq '{ok, auth, capacity, engines_available}'
+curl -s $SVC/health | jq '{ok, problems, warnings, engines_available}'
 ```
 
 ```json
@@ -226,7 +226,7 @@ or just try the call — a missing scope gives a clear `403`.
 
 | scope | what it opens |
 |---|---|
-| `read` | `/v0/profiles` `/v0/toolchain` `/v0/fonts` `/v0/jobs` `/v0/jobs/{id}` artefacts `/v0/equivalence` |
+| `read` | `/svc/v1/toolchain` `/svc/v1/fonts` `/v0/profiles` `/v0/toolchain` `/v0/fonts` `/v0/jobs` `/v0/jobs/{id}` artefacts, every `GET /v1/…` |
 | `compile` | `/v0/compile` `/v0/compile/archive` `/v0/compile/manuscript` |
 | `deliver` | `/v0/jobs/{id}/deliver` `/v0/delivery/destinations` |
 

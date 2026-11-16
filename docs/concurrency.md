@@ -15,8 +15,8 @@ refuses to do.
 ## It renders two documents at a time, and queues the rest
 
 ```bash
-curl -s $SVC/health | jq .capacity
-# {"max_renders": 2, "max_queued": 8, "running": 2, "queued": 3}
+curl -s -H "Authorization: Bearer $TOKEN" $SVC/v1/limits | jq .global
+# {"running": 2, "queued": 3, "max_running": 2, "max_queued": 8, "capacity": 10}
 ```
 
 Two, because the allocation has two CPUs. Raising it does not raise throughput —
@@ -137,8 +137,8 @@ responses.
 - **Give a heavy automated client its own deployment.** Two containers with
   `max_renders: 1` isolate two workloads better than one with `max_renders: 2`
   shared, if contention is the problem rather than throughput.
-- **Watch `/health`.** `capacity.waiting` climbing while `rendering` stays at the
-  maximum is the signature.
+- **Watch `/v1/limits`.** `global.queued` climbing while `running` stays at
+  `max_running` is the signature.
 
 ### A token is an integration, not a person
 

@@ -71,7 +71,7 @@ Check what a deployment accepts, without revealing anything:
 
 ```bash
 python -m abcprint.tokens check
-curl -s $SVC/health | jq .auth      # {"mode": "token", "tokens": 2}
+curl -s $SVC/health | jq .warnings  # [] — or a warning when auth is off or has no tokens
 ```
 
 ## Scopes
@@ -79,7 +79,7 @@ curl -s $SVC/health | jq .auth      # {"mode": "token", "tokens": 2}
 | scope | what it opens |
 |---|---|
 | `compile` | `POST /v0/compile`, `/v0/compile/archive`, `/v0/compile/manuscript` |
-| `read` | `GET /v0/jobs`, `/v0/jobs/{id}`, artefacts, `/v0/profiles`, `/v0/toolchain`, `/v0/fonts`, `POST /v0/equivalence` |
+| `read` | `GET /v0/jobs`, `/v0/jobs/{id}`, artefacts, `/v0/profiles`, `/v0/toolchain`, `/v0/fonts`, `/svc/v1/toolchain`, `/svc/v1/fonts`, every `GET /v1/…` |
 | `deliver` | `POST /v0/jobs/{id}/deliver`, `GET /v0/delivery/destinations` |
 
 A token without a scope gets **403** naming the missing one; an absent or
@@ -102,10 +102,11 @@ skipped for a typo is a token that stops working with no explanation — or, if 
 were the only one, a service that comes up accepting nobody while looking
 healthy.
 
-**`/health` is open and reports the gate.** The Nomad check needs it, and it
-carries no document data. It states `auth.mode`, so a deployment running without
-authentication is *visible* rather than assumed — which is precisely what went
-wrong the first time.
+**`/health` is open and reports an open gate.** The Nomad check needs it, and it
+carries no document data. When authentication is switched off, or no tokens are
+configured, `warnings` says so, so a deployment running without authentication is
+*visible* rather than assumed — which is precisely what went wrong the first time.
+(Until 0.16.0 it also published the token count; it no longer does.)
 
 ## Turning it off for local work
 
@@ -114,7 +115,7 @@ ABC_PRINT_SVC_AUTH=disabled
 ```
 
 Every caller becomes `anonymous` and shares one job view. `/health` then carries
-a `warning` saying so. Never set this on a reachable deployment.
+a `warnings` entry saying so. Never set this on a reachable deployment.
 
 ## What this is not
 
