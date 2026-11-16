@@ -174,7 +174,9 @@ job "abc-print-svc" {
         # share a run store or run directories — each would adopt the other's runs.
         # profile-mirror: the published profile versions this front door has admitted
         # runs for, copied where the worker (which has no network) can read them.
-        args    = ["-c", "d=/srv/dispatch/abc-print-svc/${var.name}; m=/srv/dispatch/abc-print-svc/profile-mirror; mkdir -p $d/state $d/runs $m && chown 10001 /srv/dispatch/abc-print-svc $d $d/state $d/runs $m && chmod 0750 /srv/dispatch/abc-print-svc $d $m"]
+        # profile-store: published profile bundles, when profile_source is the
+        # shared-volume store (file:///srv/dispatch/abc-print-svc/profile-store).
+        args    = ["-c", "d=/srv/dispatch/abc-print-svc/${var.name}; m=/srv/dispatch/abc-print-svc/profile-mirror; p=/srv/dispatch/abc-print-svc/profile-store; mkdir -p $d/state $d/runs $m $p && chown 10001 /srv/dispatch/abc-print-svc $d $d/state $d/runs $m $p && chmod 0750 /srv/dispatch/abc-print-svc $d $m $p"]
         network_mode = "none"
       }
       volume_mount {

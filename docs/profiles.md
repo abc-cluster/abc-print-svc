@@ -121,6 +121,16 @@ The worker job has **no network**, so it cannot reach the store.
 With `profile_source` unset, nothing changes: the profiles baked into the worker
 image answer, as before, and now carry a digest too.
 
+**On seedling the store is a folder on the shared volume**
+(`file:///srv/dispatch/abc-print-svc/profile-store`), published through the running
+front door — no bucket, no extra credential:
+
+```bash
+NOMAD_CMD="abc admin services cli nomad --" nomad/publish-profile.sh ./my-profile [--promote]
+NOMAD_CMD=… nomad/publish-profile.sh --promote-only biorxiv-dev@0.2
+NOMAD_CMD=… nomad/publish-profile.sh --list
+```
+
 Deploy with a store:
 
 ```bash
