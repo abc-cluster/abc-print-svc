@@ -157,6 +157,10 @@ def detected_chapters(paths: dict) -> list[str]:
     return seen
 
 
+# What a profile bundle carries besides its template: never layered into a build.
+NOT_TEMPLATE = frozenset({"profile.yaml", "PROVENANCE.json", "examples", "fonts", "README.md"})
+
+
 def create_quarto(root: str, profile_dir: str, *, assets: bool = True) -> dict:
     """Workspace for the quarto-render engine.
 
@@ -195,7 +199,7 @@ def create_quarto(root: str, profile_dir: str, *, assets: bool = True) -> dict:
     if not os.path.isdir(profile_dir):
         raise BundleError(f"profile directory not found: {profile_dir}")
     for item in os.listdir(profile_dir):
-        if item == "profile.yaml":
+        if item in NOT_TEMPLATE:
             continue
         # _extensions goes to the project ROOT (apaquarto emits ../_extensions/…);
         # everything else the profile ships sits beside the document.
@@ -210,7 +214,7 @@ def create_quarto(root: str, profile_dir: str, *, assets: bool = True) -> dict:
 
 def create_quarto_from_archive(root: str, profile_dir: str, zip_path: str,
                                entry: str | None = None, *,
-                               assets: bool = True) -> tuple[dict, dict]:
+                               assets: bool = True, rules: dict | None = None) -> tuple[dict, dict]:
     """Workspace built from a client zip, with the archive's layout PRESERVED.
 
     The project-garden manuscript keeps sources in src/ and figures in
@@ -221,8 +225,21 @@ def create_quarto_from_archive(root: str, profile_dir: str, zip_path: str,
     """
     from . import archive
 
+    from . import bundle_rules
     os.makedirs(root, exist_ok=True)
     manifest = archive.extract(zip_path, root)
+    layout = bundle_rules.layout_of(manifest["files"])
+    if layout == "flat":
+        # A flat zip (the document at the top) is the same project with src/
+        # implied: move it under src/ so its own relative references still hold
+        # and the render finds it where the engine looks.
+        _reroot_under_src(root, manifest)
+    manifest["layout"] = layout
+    if rules is not None:
+        try:
+            bundle_rules.check(manifest["files"], manifest["bytes"], rules, layout=layout)
+        except bundle_rules.RuleError as exc:
+            raise BundleError(str(exc)) from None
 
     paths = {
         "repo": root,
@@ -242,7 +259,7 @@ def create_quarto_from_archive(root: str, profile_dir: str, zip_path: str,
     if not os.path.isdir(profile_dir):
         raise BundleError(f"profile directory not found: {profile_dir}")
     for item in os.listdir(profile_dir):
-        if item == "profile.yaml":
+        if item in NOT_TEMPLATE:
             continue
         src_i = os.path.join(profile_dir, item)
         if item == "_extensions":
@@ -263,6 +280,17 @@ def create_quarto_from_archive(root: str, profile_dir: str, zip_path: str,
     return paths, manifest
 
 
+def _reroot_under_src(root: str, manifest: dict) -> None:
+    tmp = os.path.join(root, ".src-reroot")
+    os.makedirs(tmp)
+    for item in os.listdir(root):
+        if item != ".src-reroot":
+            shutil.move(os.path.join(root, item), os.path.join(tmp, item))
+    os.rename(tmp, os.path.join(root, "src"))
+    manifest["files"] = sorted("src/" + f for f in manifest["files"])
+    manifest["directories"] = sorted({"src"} | {"src/" + d for d in manifest.get("directories") or []})
+
+
 def resolve_entry(root: str, manifest: dict, entry: str | None) -> str:
     """Pick the document to render, relative to src/.
 
@@ -280,14 +308,18 @@ def resolve_entry(root: str, manifest: dict, entry: str | None) -> str:
             f"entry {entry!r} is not in the archive; it carries: "
             f"{[f for f in files if f.endswith('.qmd')] or 'no .qmd files'}")
 
-    for preferred in ("src/index.qmd", "index.qmd"):
-        if preferred in files:
-            return "index.qmd" if preferred == "src/index.qmd" else preferred
-    qmds = [f for f in files if f.endswith(".qmd")]
+    # The render runs from src/, so only a document under src/ can be the entry.
+    # (Until 0.17.0 a top-level index.qmd beside a src/ was picked and then not
+    # found by the worker: accepted at the door, failed in the build.)
+    if "src/index.qmd" in files:
+        return "index.qmd"
+    qmds = [f for f in files if f.endswith(".qmd") and f.startswith("src/")]
     if len(qmds) == 1:
-        return qmds[0].split("/", 1)[1] if qmds[0].startswith("src/") else qmds[0]
+        return qmds[0].split("/", 1)[1]
     if not qmds:
-        raise BundleError("archive contains no .qmd document")
+        outside = [f for f in files if f.endswith(".qmd")]
+        raise BundleError("archive contains no .qmd document under src/" +
+                          (f"; found {outside[:5]} outside it" if outside else ""))
     raise BundleError(
         f"archive contains several .qmd documents and none is src/index.qmd; "
         f"name one with `entry`: {sorted(qmds)}")
@@ -319,7 +351,8 @@ def _placed(mapping: dict, bucket: str, src: str, dest: str) -> None:
 
 
 def create_from_archive(root: str, zip_path: str, *, assets: bool = True,
-                        profile_dir: str | None = None) -> tuple[dict, dict, dict]:
+                        profile_dir: str | None = None,
+                        rules: dict | None = None) -> tuple[dict, dict, dict]:
     """Build the thesis pipeline's workspace from a project-garden zip.
 
     Accepted shape, matching the garden manuscript template:
@@ -337,9 +370,16 @@ def create_from_archive(root: str, zip_path: str, *, assets: bool = True,
     """
     from . import archive
 
+    from . import bundle_rules
     staging = os.path.join(root, "_archive")
     os.makedirs(staging, exist_ok=True)
     manifest = archive.extract(zip_path, staging)
+    if rules is not None:
+        try:
+            bundle_rules.check(manifest["files"], manifest["bytes"], rules,
+                               layout=bundle_rules.layout_of(manifest["files"]))
+        except bundle_rules.RuleError as exc:
+            raise BundleError(str(exc)) from None
 
     paths = create(root, assets=assets, profile_dir=profile_dir)
     mapping: dict = {}

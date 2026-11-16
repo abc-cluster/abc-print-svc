@@ -119,13 +119,18 @@ A profile with no rules reports `compliant: null`, never `true`.
 | prefix | owner | versioned with |
 |---|---|---|
 | `/v1/…` | abc-dispatch: uploads, `/v1/{kind}/runs`, `/v1/limits` | the abc-dispatch contract (`/v2` when the kit breaks it) |
-| `/svc/v1/…` | this service: `/svc/v1/toolchain`, `/svc/v1/fonts` | abc-print-svc's own additions |
+| `/svc/v1/…` | this service: `/svc/v1/toolchain`, `/svc/v1/fonts`, `/svc/v1/profiles`, `/svc/v1/profiles/{ref}/shape`, `…/skeleton.zip` | abc-print-svc's own additions |
 | `/v0/…` | the 0.14 API, deprecated | frozen until its sunset |
 | `/health`, `/healthz`, `/readyz`, `/version`, `/service-info`, `/docs` | unversioned operational endpoints | — |
 
 `GET /health` is open and answers only whether this deployment can build:
 `{ok, problems, warnings, engines_available}`, **503** when not. Versions and fonts
 are read-scoped at `/svc/v1/toolchain` and `/svc/v1/fonts`; capacity is `/v1/limits`.
+
+**Profiles are published, not baked** (0.17.0): a template and its zip rules can be
+improved without rebuilding the worker, every run records the profile version and
+content digest it used, and a client can ask for the shape of a zip before making
+one. See [docs/profiles.md](docs/profiles.md).
 
 Two fronts onto the same runs. A 0.14 job id is a native run id.
 

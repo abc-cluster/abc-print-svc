@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 
 import yaml
 
+from . import profile_store
+
 PROFILE_ROOT = os.environ.get("ABCPRINT_PROFILES", "/srv/profiles")
 # The front door's view of the profiles: the descriptors exported from the worker
 # image when it was built (abcprint.capabilities), and nothing else. The front door
@@ -74,6 +76,12 @@ class Profile:
     open_to_build: list = field(default_factory=list)
     quarto_metadata: dict = field(default_factory=dict)
     raw: dict = field(default_factory=dict)
+    # Where this version came from, and the content digest that identifies it.
+    bundle: dict = field(default_factory=dict)        # the client-zip rules (bundle_rules)
+    requires: dict = field(default_factory=dict)
+    digest: str = ""
+    source: str = "baked"                             # "baked" or the store's URL
+    published_at: str | None = None
 
     @property
     def ref(self) -> str:
@@ -97,7 +105,17 @@ class Profile:
                 "bibliography": self.bibliography, "layout": self.layout,
                 "rules": self.rules, "checks": self.checks,
                 "open_to_build": self.open_to_build,
-                "has_compliance_rules": self.has_compliance_rules}
+                "has_compliance_rules": self.has_compliance_rules,
+                "bundle": self.bundle, "requires": self.requires,
+                "digest": self.digest, "source": self.source,
+                "published_at": self.published_at}
+
+    def provenance(self) -> dict:
+        """What a run records about the rulebook it was built with."""
+        return {"name": self.name, "version": self.version, "ref": self.ref,
+                "digest": self.digest, "source": self.source,
+                "published_at": self.published_at, "engine": self.engine,
+                "schema_version": self.schema_version}
 
 
 def _resolve_dir(ref: str) -> str:
@@ -106,9 +124,15 @@ def _resolve_dir(ref: str) -> str:
     `profile: ../../anything` would be a file-read primitive, so references are
     looked up in the registry and anything containing a separator is refused.
     """
-    name = ref.split("@", 1)[0]
-    if not name or "/" in name or "\\" in name or name.startswith("."):
-        raise ProfileError(f"invalid profile reference {ref!r}")
+    name = _checked_name(ref)
+    st = profile_store.default()
+    if st is not None:
+        r = st.resolve(ref)
+        if r is not None:
+            try:
+                return st.materialize(r)
+            except profile_store.StoreError as exc:
+                raise ProfileError(str(exc)) from None
     path = os.path.join(PROFILE_ROOT, name)
     if not os.path.isdir(path):
         raise ProfileError(
@@ -124,7 +148,14 @@ def _registry() -> dict | None:
         return json.load(fh)["profiles"]
 
 
-def available() -> list[str]:
+def _checked_name(ref: str) -> str:
+    name = ref.split("@", 1)[0]
+    if not name or "/" in name or "\\" in name or name.startswith("."):
+        raise ProfileError(f"invalid profile reference {ref!r}")
+    return name
+
+
+def _baked_names() -> list[str]:
     reg = _registry()
     if reg is not None:
         return sorted(reg)
@@ -134,37 +165,101 @@ def available() -> list[str]:
                   if os.path.isdir(os.path.join(PROFILE_ROOT, d)))
 
 
+def available() -> list[str]:
+    """Published profiles and the ones baked into the image, by name."""
+    st = profile_store.default()
+    published = st.names() if st is not None else []
+    return sorted(set(published) | set(_baked_names()))
+
+
 def _from_descriptor(ref: str, d: dict) -> Profile:
     if "error" in d:
         raise ProfileError(d["error"])
     want = ref.split("@", 1)[1] if "@" in ref else None
-    if want and want != d["version"]:
+    # `unversioned` was what the legacy SU/FMHS profile reported before 0.17.0; a
+    # client still pinning it gets the same profile, now with its real version.
+    if want and want != d["version"] and not (want == "unversioned" and d["version"].startswith("git-")):
         raise ProfileError(
             f"profile {ref!r} requested but the registry holds version {d['version']!r}")
     fields = ("schema_version", "description", "template", "page", "fonts", "bibliography",
-              "layout", "rules", "checks", "open_to_build")
+              "layout", "rules", "checks", "open_to_build", "bundle", "requires", "digest",
+              "source", "published_at")
     return Profile(name=d["name"], version=d["version"], engine=d["engine"],
-                   **{k: d[k] for k in fields if k in d})
+                   **{k: d[k] for k in fields if k in d and d[k] is not None})
 
 
 def load(ref: str) -> Profile:
+    """A profile by reference: `name` (its default version) or `name@version`.
+
+    A published bundle answers first. In the front door (which has a registry and
+    no profile directories) that is the index's descriptor; in the worker it is
+    the fetched, digest-verified bundle itself. Otherwise the profile baked into
+    the image answers, as before.
+    """
+    name = _checked_name(ref)
+    st = profile_store.default()
+    if st is not None:
+        try:
+            r = st.resolve(ref)
+        except profile_store.StoreError as exc:
+            raise ProfileError(f"profile store unavailable: {exc}") from None
+        if r is not None:
+            meta = {"digest": r.digest, "source": r.source,
+                    "published_at": r.entry.get("published_at")}
+            if _registry() is not None:
+                return _from_descriptor(f"{r.name}@{r.version}", {**r.entry["descriptor"], **meta})
+            try:
+                d = st.materialize(r)
+            except profile_store.StoreError as exc:
+                raise ProfileError(str(exc)) from None
+            prof = _load_dir(d, f"{r.name}@{r.version}", name=r.name)
+            prof.digest, prof.source, prof.published_at = meta["digest"], meta["source"], meta["published_at"]
+            return prof
     reg = _registry()
     if reg is not None:
-        name = ref.split("@", 1)[0]
-        if not name or "/" in name or "\\" in name or name.startswith("."):
-            raise ProfileError(f"invalid profile reference {ref!r}")
         if name not in reg:
             raise ProfileError(
                 f"unknown profile {name!r}; available: {', '.join(sorted(reg)) or 'none'}")
         return _from_descriptor(ref, reg[name])
     d = _resolve_dir(ref)
+    prof = _load_dir(d, ref, name=os.path.basename(d))
+    prof.digest = _baked_digest(d)
+    return prof
+
+
+_DIGESTS: dict[str, str] = {}
+
+
+def _baked_digest(d: str) -> str:
+    """A baked profile cannot change while the process runs: hash it once."""
+    if d not in _DIGESTS:
+        _DIGESTS[d] = profile_store.dir_digest(d)
+    return _DIGESTS[d]
+
+
+def _legacy_version(d: str) -> str:
+    """A version for a profile with no profile.yaml: the revision it was vendored from."""
+    import json
+    try:
+        with open(os.path.join(d, "PROVENANCE.json")) as fh:
+            rev = json.load(fh).get("revision")
+        return f"git-{rev}" if rev else "unversioned"
+    except (OSError, ValueError):
+        return "unversioned"
+
+
+def _load_dir(d: str, ref: str, *, name: str) -> Profile:
     path = os.path.join(d, "profile.yaml")
     if not os.path.isfile(path):
         # A legacy profile directory with no profile.yaml is the SU/FMHS one,
         # whose rulebook still lives inside its template. Describe it honestly
-        # rather than inventing a schema it does not have.
-        return Profile(name=os.path.basename(d), version="unversioned",
-                       engine="thesis-assemble",
+        # rather than inventing a schema it does not have; its version is the
+        # revision it was vendored from, so a build can still say which one.
+        version = _legacy_version(d)
+        want = ref.split("@", 1)[1] if "@" in ref else None
+        if want and want not in (version, "unversioned"):
+            raise ProfileError(f"profile {ref!r} requested but the image holds version {version!r}")
+        return Profile(name=name, version=version, engine="thesis-assemble",
                        description="legacy profile; rules still embedded in the template")
     with open(path) as fh:
         raw = yaml.safe_load(fh) or {}
@@ -176,7 +271,7 @@ def load(ref: str) -> Profile:
         raise ProfileError(
             f"profile {ref!r} requested but the registry holds version {got!r}")
     return Profile(
-        name=raw.get("name", os.path.basename(d)), version=got or "unversioned",
+        name=raw.get("name", name), version=got or "unversioned",
         engine=raw["engine"], schema_version=int(raw.get("schema_version", 1)),
         description=raw.get("description", ""), template=raw.get("template", {}) or {},
         page=raw.get("page", {}) or {}, fonts=raw.get("fonts", {}) or {},
@@ -184,7 +279,25 @@ def load(ref: str) -> Profile:
         layout=raw.get("layout", {}) or {}, rules=raw.get("rules", {}) or {},
         checks=raw.get("checks", {}) or {},
         open_to_build=raw.get("open_to_build", []) or [],
-        quarto_metadata=raw.get("quarto_metadata", {}) or {}, raw=raw)
+        quarto_metadata=raw.get("quarto_metadata", {}) or {}, raw=raw,
+        bundle=raw.get("bundle", {}) or {}, requires=raw.get("requires", {}) or {})
+
+
+def stage_for_worker(ref: str) -> None:
+    """Make a pinned, published version readable by the worker (front door only).
+
+    A no-op without a store or without a mirror: baked profiles are already in
+    the worker image, and an in-process build reads the store directly.
+    """
+    st, mir = profile_store.default(), profile_store.mirror()
+    if st is None or mir is None:
+        return
+    try:
+        r = st.resolve(ref)
+        if r is not None:
+            st.mirror_into(r, mir)
+    except profile_store.StoreError as exc:
+        raise ProfileError(f"could not stage profile {ref} for the worker: {exc}") from None
 
 
 def check_quarto_metadata(meta: dict) -> list[str]:
