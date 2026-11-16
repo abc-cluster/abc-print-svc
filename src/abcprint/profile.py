@@ -59,6 +59,10 @@ class ProfileError(ValueError):
     pass
 
 
+class ProfileUntrusted(ProfileError):
+    """The store holds the version, but its signature does not satisfy the policy."""
+
+
 @dataclass
 class Profile:
     name: str
@@ -82,6 +86,8 @@ class Profile:
     digest: str = ""
     source: str = "baked"                             # "baked" or the store's URL
     published_at: str | None = None
+    aliases: list = field(default_factory=list)       # other names a pin may use
+    fonts_license: str = ""                           # SPDX id for what fonts/ ships
 
     @property
     def ref(self) -> str:
@@ -108,7 +114,8 @@ class Profile:
                 "has_compliance_rules": self.has_compliance_rules,
                 "bundle": self.bundle, "requires": self.requires,
                 "digest": self.digest, "source": self.source,
-                "published_at": self.published_at}
+                "published_at": self.published_at, "aliases": self.aliases,
+                "fonts_license": self.fonts_license}
 
     def provenance(self) -> dict:
         """What a run records about the rulebook it was built with."""
@@ -127,7 +134,10 @@ def _resolve_dir(ref: str) -> str:
     name = _checked_name(ref)
     st = profile_store.default()
     if st is not None:
-        r = st.resolve(ref)
+        try:
+            r = st.resolve(ref)
+        except profile_store.SignatureError as exc:
+            raise ProfileUntrusted(str(exc)) from None
         if r is not None:
             try:
                 return st.materialize(r)
@@ -183,7 +193,7 @@ def _from_descriptor(ref: str, d: dict) -> Profile:
             f"profile {ref!r} requested but the registry holds version {d['version']!r}")
     fields = ("schema_version", "description", "template", "page", "fonts", "bibliography",
               "layout", "rules", "checks", "open_to_build", "bundle", "requires", "digest",
-              "source", "published_at")
+              "source", "published_at", "aliases", "fonts_license")
     return Profile(name=d["name"], version=d["version"], engine=d["engine"],
                    **{k: d[k] for k in fields if k in d and d[k] is not None})
 
@@ -201,6 +211,8 @@ def load(ref: str) -> Profile:
     if st is not None:
         try:
             r = st.resolve(ref)
+        except profile_store.SignatureError as exc:
+            raise ProfileUntrusted(str(exc)) from None
         except profile_store.StoreError as exc:
             raise ProfileError(f"profile store unavailable: {exc}") from None
         if r is not None:
@@ -280,7 +292,9 @@ def _load_dir(d: str, ref: str, *, name: str) -> Profile:
         checks=raw.get("checks", {}) or {},
         open_to_build=raw.get("open_to_build", []) or [],
         quarto_metadata=raw.get("quarto_metadata", {}) or {}, raw=raw,
-        bundle=raw.get("bundle", {}) or {}, requires=raw.get("requires", {}) or {})
+        bundle=raw.get("bundle", {}) or {}, requires=raw.get("requires", {}) or {},
+        aliases=[str(a) for a in (raw.get("aliases") or [])],
+        fonts_license=str(raw.get("fonts_license") or ""))
 
 
 def stage_for_worker(ref: str) -> None:

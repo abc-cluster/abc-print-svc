@@ -87,12 +87,28 @@ def create(root: str, *, assets: bool = True, profile_dir: str | None = None) ->
     if not os.path.isdir(profile_dir):
         raise BundleError(
             f"profile not found at {profile_dir}; the image was built without one")
-    # dirs_exist_ok so the skeleton above does not collide with the profile copy
-    shutil.copytree(profile_dir, paths["quarto"], dirs_exist_ok=True)
+    # The template, without what a bundle carries beside it. dirs_exist_ok so the
+    # skeleton above does not collide with the profile copy.
+    for item in os.listdir(profile_dir):
+        if item in NOT_TEMPLATE:
+            continue
+        s_, d_ = os.path.join(profile_dir, item), os.path.join(paths["quarto"], item)
+        if os.path.isdir(s_):
+            shutil.copytree(s_, d_, dirs_exist_ok=True)
+        else:
+            shutil.copy2(s_, d_)
 
-    if not os.path.isdir(PIPELINE_DIR):
-        raise BundleError(f"pipeline scripts not found at {PIPELINE_DIR}")
-    shutil.copytree(PIPELINE_DIR, paths["bin"], dirs_exist_ok=True)
+    # The pipeline is the profile's rulebook, so since 0.18.0 it travels in the
+    # profile bundle (pipeline/). An image that still has one baked in (an older
+    # build, or a legacy profile directory) is the fallback.
+    pipeline = os.path.join(profile_dir, "pipeline")
+    if not os.path.isdir(pipeline):
+        pipeline = PIPELINE_DIR
+    if not os.path.isfile(os.path.join(pipeline, "thesis-assemble.sh")):
+        raise BundleError(f"profile {os.path.basename(profile_dir.rstrip('/'))!r} carries no "
+                          f"thesis pipeline (pipeline/thesis-assemble.sh)")
+    shutil.copytree(pipeline, paths["bin"], dirs_exist_ok=True)
+    install_profile_fonts(paths, profile_dir)
     for f in os.listdir(paths["bin"]):
         fp = os.path.join(paths["bin"], f)
         if os.path.isfile(fp):
@@ -158,7 +174,33 @@ def detected_chapters(paths: dict) -> list[str]:
 
 
 # What a profile bundle carries besides its template: never layered into a build.
-NOT_TEMPLATE = frozenset({"profile.yaml", "PROVENANCE.json", "examples", "fonts", "README.md"})
+# `pipeline/` is the thesis engine's scripts and goes to writeup/bin; `fonts/` is
+# put on the render's font path (install_profile_fonts), not beside the document.
+NOT_TEMPLATE = frozenset({"profile.yaml", "PROVENANCE.json", "examples", "fonts", "README.md",
+                          "pipeline"})
+FONT_EXTS = (".ttf", ".otf", ".ttc", ".otc")
+
+
+def install_profile_fonts(paths: dict, profile_dir: str) -> list[str]:
+    """Put a profile's `fonts/` where the render finds them; return the font dirs.
+
+    Two places, because the two renderers look in different ones: typst takes
+    TYPST_FONT_PATHS (compile sets it from ``paths["font_dirs"]``), and anything
+    resolving through fontconfig — pandoc's DOCX path, `fc-match` in the font
+    report — looks under $HOME, which every build sets to the workspace.
+    """
+    src = os.path.join(profile_dir, "fonts")
+    paths["font_dirs"] = []
+    if not os.path.isdir(src):
+        return []
+    dest = os.path.join(paths["repo"], ".local", "share", "fonts", "profile")
+    os.makedirs(dest, exist_ok=True)
+    for dirpath, _, files in os.walk(src):
+        for f in files:
+            if f.lower().endswith(FONT_EXTS):
+                shutil.copy2(os.path.join(dirpath, f), os.path.join(dest, f))
+    paths["font_dirs"] = [dest]
+    return [dest]
 
 
 def create_quarto(root: str, profile_dir: str, *, assets: bool = True) -> dict:
@@ -209,6 +251,7 @@ def create_quarto(root: str, profile_dir: str, *, assets: bool = True) -> dict:
             shutil.copytree(s_, d_, dirs_exist_ok=True)
         else:
             shutil.copy2(s_, d_)
+    install_profile_fonts(paths, profile_dir)
     return paths
 
 
@@ -276,7 +319,7 @@ def create_quarto_from_archive(root: str, profile_dir: str, zip_path: str,
             shutil.copytree(src_i, dest_i, dirs_exist_ok=True)
         else:
             shutil.copy2(src_i, dest_i)
-
+    install_profile_fonts(paths, profile_dir)
     return paths, manifest
 
 

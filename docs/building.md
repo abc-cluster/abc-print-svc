@@ -3,7 +3,6 @@
 ```bash
 git clone https://github.com/abc-cluster/abc-print-svc.git
 cd abc-print-svc
-./docker/vendor-pipeline.sh        # optional: the thesis engine
 ./docker/vendor-dispatch.sh        # abc-dispatch, from its pinned tag
 docker build --target worker -t abc-print-worker:local -f Containerfile .
 docker build --target api    -t abc-print-svc:local    -f Containerfile .
@@ -11,8 +10,9 @@ docker build --target api    -t abc-print-svc:local    -f Containerfile .
 
 Two images from one file, built together:
 
-- **`worker`** — quarto, typst, fonts, profiles, the thesis pipeline. A build runs
-  in it, one Nomad job per run. Its build measures what it can do into
+- **`worker`** — quarto, typst, pandoc, qpdf, poppler, fonts, and the public
+  profiles authored here (`profiles-src/`). A build runs in it, one Nomad job per
+  run. Its build measures what it can do into
   `/srv/capabilities.json`.
 - **`api`** — the front door. Copies that record and the doc assets from the
   worker stage of the same build, and nothing else of it: no profile, pipeline or
@@ -32,41 +32,27 @@ docker run --rm -p 8080:8080 -e ABC_PRINT_SVC_AUTH=disabled abc-print-worker:loc
 
 That is the whole thing. It works from a clean clone with nothing else on disk.
 
-## If you do not need the thesis engine, nothing is missing
+## The thesis engine, and why the image has no thesis profile
 
-`vendor-pipeline.sh` prepares the build context. It always vendors the profiles
-authored in this repo — which is how **`biorxiv-dev` and the `quarto-render`
-engine** get in — and then *optionally* adds the thesis pipeline if it can find
-it.
+Until 0.17.0, `docker/vendor-pipeline.sh` copied the SU/FMHS profile and the
+thesis pipeline out of the (private) thesis repository into the build context,
+sanitised them, and they were baked into the worker image. That step is gone.
 
-The thesis pipeline and the SU/FMHS profile still live in a **separate,
-private repository**. If you do not have it, the script prints:
-
-```
-NOTE: no thesis pipeline at /…/PHD-dissertation/writeup/bin
-      building WITHOUT the thesis-assemble engine (quarto-render still works).
-```
-
-and continues. The resulting image runs everything except `POST /v0/compile`, which
-returns **503** naming the reason rather than failing a job thirty seconds in.
-
-Check what an image can do:
+Since 0.18.0 the profile **and its pipeline** are one profile bundle in the store
+(docs/profiles.md):
 
 ```bash
-curl -s localhost:8080/health | jq .engines_available
-# { "quarto-render": true, "thesis-assemble": false }
+bundles/su-fmhs/build.sh ~/projects/PHD-dissertation <revision> <version> /tmp/su-fmhs-<version> [alias …]
+NOMAD_CMD="abc admin services cli nomad --" nomad/publish-profile.sh /tmp/su-fmhs-<version> --promote
 ```
 
-> An earlier version of this script **exited 1** when that repository was absent,
-> which made the documented first build step fail for everyone who is not its
-> author. If you hit that, you have an old checkout.
+The image still runs the thesis-assemble **engine** (bash, qpdf, poppler, quarto);
+what it runs comes with the profile. So:
 
-To include the thesis engine, point the script at the repo:
-
-```bash
-./docker/vendor-pipeline.sh /path/to/PHD-dissertation
-# or: export ABCPRINT_THESIS_REPO=/path/to/PHD-dissertation
-```
+- improving the rulebook is a publish, not an image rebuild;
+- every run records which pipeline revision verified it (`manifest.pipeline`);
+- the published images contain nothing private, by construction, and the build
+  fails if `/srv/profiles/su-fmhs` or `/srv/pipeline` appears in them.
 
 ## Troubleshooting
 
@@ -76,9 +62,6 @@ combinations stall there. Use the legacy builder:
 ```bash
 DOCKER_BUILDKIT=0 docker build -t abc-print-svc:local -f Containerfile .
 ```
-
-**`COPY pipeline/ … : not found`.** You skipped `vendor-pipeline.sh`. It creates
-that directory, with a placeholder when the thesis repo is absent.
 
 **Font or documentation downloads fail the build.** Deliberate. An earlier
 revision swallowed them with `|| echo NOTE` and produced an image that built

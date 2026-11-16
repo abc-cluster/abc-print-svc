@@ -128,3 +128,53 @@ def health(required: list[str], font_paths: list[str] | None = None) -> dict:
         "substituted": subbed,
         "resolutions": [r.as_dict() for r in res],
     }
+
+
+# ── families inside font files (no fontconfig needed) ─────────────────────────
+#
+# `publish` checks a profile's fonts/ in the front door, which carries no
+# fontconfig and no typst. Reading the family from the OpenType `name` table is
+# a few dozen lines and needs nothing installed.
+
+def _name_table_families(data: bytes, offset: int) -> set[str]:
+    import struct
+    num_tables = struct.unpack_from(">H", data, offset + 4)[0]
+    for i in range(num_tables):
+        tag, _, tbl_off, _ = struct.unpack_from(">4sIII", data, offset + 12 + 16 * i)
+        if tag != b"name":
+            continue
+        _, count, str_off = struct.unpack_from(">HHH", data, tbl_off)
+        found: dict[int, str] = {}
+        for j in range(count):
+            pid, eid, lid, nid, length, off = struct.unpack_from(">HHHHHH", data, tbl_off + 6 + 12 * j)
+            if nid not in (1, 16):
+                continue
+            raw = data[tbl_off + str_off + off: tbl_off + str_off + off + length]
+            if pid == 3 or pid == 0:
+                text = raw.decode("utf-16-be", "ignore")
+            elif pid == 1 and lid == 0:
+                text = raw.decode("mac_roman", "ignore")
+            else:
+                continue
+            # Prefer the typographic family (16) over the legacy one (1).
+            if text and (nid not in found or (pid == 3 and lid == 0x409)):
+                found[nid] = text
+        fam = found.get(16) or found.get(1)
+        return {fam} if fam else set()
+    return set()
+
+
+def families_in_file(path: str) -> set[str]:
+    """The family names a .ttf/.otf (or each face of a .ttc/.otc) declares."""
+    import struct
+    with open(path, "rb") as fh:
+        data = fh.read()
+    if data[:4] == b"ttcf":
+        n = struct.unpack_from(">I", data, 8)[0]
+        out: set[str] = set()
+        for k in range(n):
+            out |= _name_table_families(data, struct.unpack_from(">I", data, 12 + 4 * k)[0])
+        return out
+    if data[:4] in (b"\x00\x01\x00\x00", b"OTTO", b"true"):
+        return _name_table_families(data, 0)
+    raise ValueError(f"{os.path.basename(path)} is not a TrueType/OpenType font")

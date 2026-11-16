@@ -88,6 +88,12 @@ variable "profile_s3_credentials" {
   description = "Read profile_s3_access_key / profile_s3_secret_key from the Nomad variable nomad/jobs/<name> (a read-only key)."
 }
 
+variable "profile_trusted_keys" {
+  type        = string
+  default     = ""
+  description = "Base64 raw Ed25519 public keys (comma-separated) whose signatures on published profiles are trusted. Set = signatures required."
+}
+
 job "abc-print-svc" {
   id          = var.name
   namespace   = "abc-apps"
@@ -227,6 +233,9 @@ job "abc-print-svc" {
         ABCPRINT_PROFILE_MIRROR      = var.profile_source != "" ? "file:///srv/dispatch/abc-print-svc/profile-mirror" : ""
         ABCPRINT_PROFILE_S3_ENDPOINT = var.profile_s3_endpoint
         ABCPRINT_PROFILE_CACHE       = "/srv/dispatch/abc-print-svc/profile-mirror/.cache"
+        # Public keys, not secrets. Set, they make a signature mandatory: the front
+        # door refuses to admit a run on an unsigned or wrongly signed version.
+        ABCPRINT_PROFILE_TRUSTED_KEYS = var.profile_trusted_keys
       }
 
       dynamic "template" {

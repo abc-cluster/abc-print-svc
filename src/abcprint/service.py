@@ -35,7 +35,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Literal, Mapping, Optional
+from typing import Literal, Mapping, Optional, Union
 
 from fastapi import Depends, File, Form, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,7 +44,8 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from abc_dispatch import ApiError, Cancelled, ExecutorFailure, Kind, KindContext, KindResult, State
+from abc_dispatch import (ApiError, Cancelled, ExecutorFailure, Kind, KindContext, KindResult, State,
+                          run_output_ref)
 from abc_dispatch.admission import Admission
 from abc_dispatch.app import ServiceSettings, create_app
 from abc_dispatch.cli import run_tool
@@ -61,7 +62,7 @@ from . import (archive, auth, bundle_rules, capabilities, compile as compiler, d
                identity, profile as profiles, workspace)
 from .runner import TimedOut
 
-__version__ = "0.17.0"
+__version__ = "0.18.0"
 
 GRACE_S = float(os.environ.get("ABCPRINT_GRACE_S", "30"))
 KINDS = ("thesis", "manuscript", "equivalence")
@@ -131,11 +132,29 @@ class ManuscriptRequest(_Sources):
                     "read a client-chosen path are refused by name (see the profiles list).")
 
 
-class EquivalenceRequest(BaseModel):
-    """Are two builds the same document? Four planes, strictest last."""
+class RunOutput(BaseModel):
+    """A PDF one of your own runs produced, compared where it is."""
     model_config = ConfigDict(extra="forbid")
-    a: str = Field(..., description="`upload_id` of the first PDF.")
-    b: str = Field(..., description="`upload_id` of the second PDF.")
+    run: str = Field(..., description="A `run_id` of yours (a thesis or manuscript run).",
+                     examples=["run_01J…"])
+    output: str = Field(..., description="The output's name as the run lists it in `outputs`.",
+                        examples=["thesis-assembled.pdf"])
+
+
+_OPERAND = ("Either an `upload_id` of a PDF, or `{\"run\": \"run_…\", \"output\": \"….pdf\"}` — "
+            "an output of one of your own finished runs, compared without downloading it.")
+
+
+class EquivalenceRequest(BaseModel):
+    """Are two builds the same document? Four planes, strictest last.
+
+    Each side is an upload or an output of one of your own runs, so "did the
+    rebuild change the document?" needs no download and no re-upload. Creating a
+    comparison needs the `compile` scope: it stores files and takes a worker slot.
+    """
+    model_config = ConfigDict(extra="forbid")
+    a: Union[str, RunOutput] = Field(..., description="The first PDF. " + _OPERAND)
+    b: Union[str, RunOutput] = Field(..., description="The second PDF. " + _OPERAND)
     dpi: int = Field(72, ge=36, le=300, description="Raster DPI. Higher is stricter and slower.")
     sample: int = Field(6, ge=0, le=2000,
                         description="Pages to rasterise, spread across the document. 0 = every page.")
@@ -259,6 +278,9 @@ def _engine_ready(engine: str) -> None:
 def _profile_for(ref: str, engine: str, other_kind: str):
     try:
         prof = profiles.load(ref)
+    except profiles.ProfileUntrusted as exc:
+        # The operator's problem, not the caller's: the request may be fine.
+        raise ApiError(503, "profile_untrusted", str(exc)) from None
     except profiles.ProfileError as exc:
         raise _invalid(str(exc))
     if prof.engine != engine:
@@ -428,9 +450,18 @@ class EquivalenceKind(Kind):
     summary = "Decide whether two PDFs are the same document, on four planes."
     request_model = EquivalenceRequest
     consume_inputs = True
+    # A side may be an output of the caller's own run: the kit links it into a
+    # fresh upload, so staging, restart recovery and consumption are unchanged.
+    accepts_run_outputs = True
 
     def validate(self, request: EquivalenceRequest, resolve_upload):
-        return {"a": resolve_upload(request.a), "b": resolve_upload(request.b)}
+        def side(x):
+            if isinstance(x, RunOutput):
+                if not x.output.lower().endswith(".pdf"):
+                    raise _invalid(f"{x.run}/{x.output}: only a PDF output can be compared")
+                return resolve_upload(run_output_ref(x.run, x.output))
+            return resolve_upload(x)
+        return {"a": side(request.a), "b": side(request.b)}
 
     def execute(self, ctx: KindContext) -> KindResult:
         req: EquivalenceRequest = ctx.request
@@ -475,8 +506,9 @@ def make_kind() -> Kind:
 
 def _native_scope(request: Request) -> str:
     path, method = request.url.path, request.method.upper()
-    if path.startswith("/v1/equivalence/"):
-        return "read"           # comparing builds was a read-scope call in 0.14
+    # Creating a comparison (POST /v1/equivalence/runs) is `compile`, like any run:
+    # it stores files and takes a worker slot, and `read` means "never writes".
+    # Reading a comparison back is `read`, like any GET.
     if method == "GET":
         return "read"
     if path.endswith("/tickets"):

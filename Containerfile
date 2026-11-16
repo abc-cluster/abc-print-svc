@@ -17,8 +17,9 @@
 # resolves the real family name ahead of the stand-in.
 # Two targets from one file, built and tagged together:
 #
-#   worker   the compilation pipeline: quarto, typst, fonts, profiles, the thesis
-#            pipeline. A dispatched run executes in it, one Nomad job per run.
+#   worker   the engines and their toolchain: quarto, typst, fonts, the public
+#            profiles. Private profiles and the thesis pipeline are published
+#            bundles (0.18.0), fetched per run from the store's mirror. A dispatched run executes in it, one Nomad job per run.
 #   api      the front door: validates, admits, queues and dispatches. It carries
 #            NO profile, pipeline or toolchain — only a record of what the worker
 #            built alongside it can do (capabilities.json).
@@ -153,38 +154,26 @@ RUN mkdir -p /srv/vendor \
 # --- the service ------------------------------------------------------------
 WORKDIR /srv
 COPY src/ /srv/src/
-COPY profiles/ /srv/profiles/
-# Pipeline scripts, vendored into the build context by docker/vendor-pipeline.sh.
-COPY pipeline/ /srv/pipeline/
-# Refuse to build from a context the vendor step did not finish.
+# Only the profiles authored in this repository, which are public. Since 0.18.0
+# the SU/FMHS profile and the thesis pipeline are NOT in the image: they are a
+# profile bundle published to the store (bundles/su-fmhs/build.sh, then
+# nomad/publish-profile.sh), so the image carries nothing private at all.
 #
-# On 2026-11-08 the published 0.13.0 and 0.14.0 were found to carry render logs
-# with the author's private front matter in /srv/profiles/su-fmhs/. The sanitiser
-# had caught them and exited fatally; the exit code was lost to a `| tail`, and
-# the image was built from the rejected context anyway. Nothing in the build
-# noticed, because nothing here asked.
-#
-# Two generic checks, deliberately naming no private terms (this file is public):
-#   - the vendor step's completion marker is present: PROVENANCE.json when the
-#     pipeline was vendored, NOT-VENDORED.txt when it deliberately was not. A
-#     half-vendored context has neither, which is exactly the state that shipped,
-#     and which also made every manifest report "not-vendored" while the thesis
-#     engine was running.
-#   - no build artefacts are in the profile. A render log, a subbuild file or a
-#     PDF has no business in an image, and the render log is what leaked.
-RUN { test -f /srv/pipeline/PROVENANCE.json || test -f /srv/pipeline/NOT-VENDORED.txt; } \
-      || { echo "FATAL: pipeline/ has no completion marker — run docker/vendor-pipeline.sh and check that it printed VENDOR OK" >&2; exit 1; } \
- && if [ -d /srv/profiles/su-fmhs ] && [ ! -f /srv/profiles/su-fmhs/PROVENANCE.json ]; then \
-      echo "FATAL: profiles/su-fmhs/ exists without provenance — the vendor step did not finish" >&2; exit 1; fi \
- && leftovers="$(find /srv/profiles /srv/pipeline -type f \( -name '*.log' -o -name 'subuild*' -o -name '*.pdf' \) | head -20)" \
+# History, kept because it is why this is checked rather than trusted: on
+# 2026-11-08 the published 0.13.0 and 0.14.0 were found to carry render logs with
+# the author's private front matter in /srv/profiles/su-fmhs/ — the sanitiser had
+# refused them, its exit code was lost to a `| tail`, and the image was built from
+# the rejected context anyway. The vendor step that made that possible is gone.
+COPY profiles-src/ /srv/profiles/
+RUN ! test -e /srv/profiles/su-fmhs && ! test -e /srv/pipeline \
+ || { echo "FATAL: a private profile or the thesis pipeline is in the image; they are published bundles since 0.18.0" >&2; exit 1; } \
+ && leftovers="$(find /srv/profiles -type f \( -name '*.log' -o -name 'subuild*' -o -name '*.pdf' \) | head -20)" \
  && if [ -n "$leftovers" ]; then \
-      echo "FATAL: build artefacts in the vendored profile/pipeline:" >&2; echo "$leftovers" >&2; exit 1; fi \
- && echo "vendored context verified"
+      echo "FATAL: build artefacts in a baked profile:" >&2; echo "$leftovers" >&2; exit 1; fi \
+ && echo "image profiles verified: public only"
 ENV PYTHONPATH=/srv/src \
     ABCPRINT_VENDOR=/srv/vendor \
     ABCPRINT_FONT_PATHS=/usr/local/share/fonts/licensed:/usr/local/share/fonts/ofl \
-    ABCPRINT_PIPELINE=/srv/pipeline \
-    ABCPRINT_PROFILE=/srv/profiles/su-fmhs \
     ABCPRINT_PROFILES=/srv/profiles \
     ABCPRINT_DOWNLOADS=/srv/downloads
 

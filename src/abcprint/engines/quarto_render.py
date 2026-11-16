@@ -181,7 +181,9 @@ def run(paths: dict, prof: profiles.Profile, *, formats: list[str],
         raise EngineError(
             f"profile {prof.ref} cannot produce {unknown}; it offers {sorted(fmt_map)}")
 
+    from ..compile import font_env
     env = dict(os.environ)
+    env.update(font_env(paths))
     env.update({"SOURCE_DATE_EPOCH": os.environ.get("ABCPRINT_SOURCE_DATE_EPOCH", "1700000000"),
                 "TZ": "UTC", "HOME": paths["repo"],
                 # Belt and braces: the metadata guard refuses `execute`, and this
