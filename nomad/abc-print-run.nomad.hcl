@@ -91,6 +91,11 @@ job "abc-print-run" {
       env {
         ABCPRINT_SOURCE_DATE_EPOCH = "1700000000"
         ABCPRINT_BUILD_TIMEOUT     = "1800"
+        # Published profiles reach the worker through the front door's mirror on
+        # the shared volume (this job has no network). Each bundle is verified
+        # against its digest before a build uses it. Empty mirror = baked profiles.
+        ABCPRINT_PROFILE_SOURCE    = "file:///srv/dispatch/abc-print-svc/profile-mirror"
+        ABCPRINT_PROFILE_CACHE     = "/srv/dispatch/abc-print-svc/profile-mirror/.cache"
       }
 
       # Longer than run_tool's 30 s grace period, or Nomad's kill arrives first.

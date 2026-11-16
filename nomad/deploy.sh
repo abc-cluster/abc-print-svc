@@ -2,7 +2,7 @@
 # Deploy abc-print-svc on Nomad: the workers' namespace and job, the front door's
 # dispatch policy, then the front door. Idempotent; rerun to roll a new version.
 #
-#   NOMAD_ADDR=… NOMAD_TOKEN=<management> nomad/deploy.sh 0.16.0
+#   NOMAD_ADDR=… NOMAD_TOKEN=<management> nomad/deploy.sh 0.17.0
 #
 # A management token is needed once per deploy, by the operator, to register the
 # jobs and the policy. The running service holds no token: the front door
@@ -32,6 +32,12 @@ tokens="$(grep -vE '^[[:space:]]*(#|$)' "$HERE/tokens.hashes" | paste -sd'|' -)"
 "${NOMAD[@]}" acl policy apply -namespace abc-apps -job "$NAME" \
   -description "abc-print-svc front door: dispatch abc-print-run" \
   "abc-print-svc-dispatch" "$HERE/front-door-dispatch.policy.hcl"
+# Published profiles (optional): PROFILE_SOURCE=s3://bucket/prefix [PROFILE_S3_ENDPOINT=…]
+# [PROFILE_S3_CREDENTIALS=true, with profile_s3_access_key/_secret_key in nomad/jobs/$NAME].
+profile_vars=()
+[ -n "${PROFILE_SOURCE:-}" ] && profile_vars+=(-var "profile_source=$PROFILE_SOURCE")
+[ -n "${PROFILE_S3_ENDPOINT:-}" ] && profile_vars+=(-var "profile_s3_endpoint=$PROFILE_S3_ENDPOINT")
+[ "${PROFILE_S3_CREDENTIALS:-}" = true ] && profile_vars+=(-var "profile_s3_credentials=true")
 "${NOMAD[@]}" job run -var "image=ghcr.io/abc-cluster/abc-print-svc:$V" \
-  -var "name=$NAME" -var "host=$HOST" -var "tokens=$tokens" \
+  -var "name=$NAME" -var "host=$HOST" -var "tokens=$tokens" ${profile_vars[@]+"${profile_vars[@]}"} \
   "$HERE/abc-print-svc.nomad.hcl"

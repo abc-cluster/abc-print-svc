@@ -57,11 +57,11 @@ from abc_dispatch.states import ACTIVE, TERMINAL
 from abc_dispatch.storage import LocalStorage
 from abc_dispatch.store import RunRecord, Store, UploadRecord
 
-from . import (archive, auth, capabilities, compile as compiler, delivery, equivalence,
+from . import (archive, auth, bundle_rules, capabilities, compile as compiler, delivery, equivalence,
                identity, profile as profiles, workspace)
 from .runner import TimedOut
 
-__version__ = "0.16.0"
+__version__ = "0.17.0"
 
 GRACE_S = float(os.environ.get("ABCPRINT_GRACE_S", "30"))
 KINDS = ("thesis", "manuscript", "equivalence")
@@ -165,13 +165,22 @@ def _identity(paths: dict) -> dict:
     return {"source": identity.FILENAME, "keys": sorted(identity.read(fp))}
 
 
+def _rules(ref: str) -> dict | None:
+    """The profile's zip rules; None if the profile cannot be loaded (refused elsewhere)."""
+    try:
+        return bundle_rules.effective(profiles.load(ref))
+    except profiles.ProfileError:
+        return None
+
+
 def prepare_thesis(req: ThesisRequest, inputs: Mapping[str, Path], root: str, *,
                    assets: bool, profile_dir: str | None = None) -> tuple[dict, dict]:
     try:
         archive_desc = None
         if req.bundle:
             paths, mapping, manifest = workspace.create_from_archive(
-                root, str(inputs["bundle"]), assets=assets, profile_dir=profile_dir)
+                root, str(inputs["bundle"]), assets=assets, profile_dir=profile_dir,
+                rules=_rules(req.profile))
             archive_desc = workspace.describe_thesis(manifest, mapping)
         else:
             paths = workspace.create(root, assets=assets, profile_dir=profile_dir)
@@ -204,7 +213,8 @@ def prepare_manuscript(req: ManuscriptRequest, inputs: Mapping[str, Path], root:
         archive_desc = None
         if req.bundle:
             paths, manifest = workspace.create_quarto_from_archive(
-                root, profile_dir, str(inputs["bundle"]), assets=assets)
+                root, profile_dir, str(inputs["bundle"]), assets=assets,
+                rules=_rules(req.profile))
             entry = workspace.resolve_entry(root, manifest, req.entry)
             archive_desc = archive.describe(manifest, f"src/{entry}")
         else:
@@ -257,6 +267,14 @@ def _profile_for(ref: str, engine: str, other_kind: str):
     return prof
 
 
+def _stage_profile(ref: str) -> None:
+    try:
+        profiles.stage_for_worker(ref)
+    except profiles.ProfileError as exc:
+        raise ApiError(503, "profile_store_unavailable", str(exc),
+                       headers={"Retry-After": "30"}) from None
+
+
 def _tool_runner(ctx: KindContext):
     """The runner the engines call, built on run_tool: a cancelled run stops
     its build, and the output streams into the run log while it is kept whole
@@ -299,6 +317,7 @@ class ThesisKind(Kind):
     def validate(self, request: ThesisRequest, resolve_upload):
         prof = _profile_for(request.profile, "thesis-assemble", "manuscript")
         _engine_ready(prof.engine)
+        request.profile = prof.ref      # pinned at admission: the worker builds THIS version
         inputs = _resolve_inputs(request, resolve_upload,
                                  ("sources", "figures", "inserted", "bibliography"))
         scratch = tempfile.mkdtemp(prefix="abcprint-check-")
@@ -308,13 +327,14 @@ class ThesisKind(Kind):
             raise _invalid(str(exc))
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
+        _stage_profile(request.profile)                # the worker has no network
         return inputs
 
     def execute(self, ctx: KindContext) -> KindResult:
         req: ThesisRequest = ctx.request
         prof = profiles.load(req.profile)
-        options = {"profile": prof.ref, "engine": prof.engine, "copy": req.copy,
-                   "checks": req.checks}
+        options = {"profile": prof.ref, "profile_digest": prof.digest, "engine": prof.engine,
+                   "copy": req.copy, "checks": req.checks}
         try:
             paths, info = prepare_thesis(req, ctx.inputs, str(ctx.workdir / "ws"), assets=True,
                                          profile_dir=profiles._resolve_dir(req.profile))
@@ -336,7 +356,8 @@ class ThesisKind(Kind):
         outputs = _publish(paths["build"], result["artifacts"], ctx.outdir)
         return KindResult(outputs=outputs, outcome={
             "compliant": result.get("compliant"), "checks": result["checks"],
-            "manifest": result["manifest"], "artifacts": result["artifacts"],
+            "manifest": {**result["manifest"], "profile": prof.provenance()},
+            "artifacts": result["artifacts"],
             "log_tail": result["log_tail"], "options": options,
             "detected_chapters": info["detected_chapters"]})
 
@@ -356,6 +377,7 @@ class ManuscriptKind(Kind):
     def validate(self, request: ManuscriptRequest, resolve_upload):
         prof = _profile_for(request.profile, "quarto-render", "thesis")
         _engine_ready(prof.engine)
+        request.profile = prof.ref      # pinned at admission: the worker builds THIS version
         inputs = _resolve_inputs(request, resolve_upload, ("sources", "figures", "bibliography"))
         scratch = tempfile.mkdtemp(prefix="abcprint-check-")
         try:
@@ -364,12 +386,14 @@ class ManuscriptKind(Kind):
             raise _invalid(str(exc))
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
+        _stage_profile(request.profile)                # the worker has no network
         return inputs
 
     def execute(self, ctx: KindContext) -> KindResult:
         req: ManuscriptRequest = ctx.request
         prof = profiles.load(req.profile)
-        options = {"profile": prof.ref, "engine": prof.engine, "outputs": req.outputs,
+        options = {"profile": prof.ref, "profile_digest": prof.digest, "engine": prof.engine,
+                   "outputs": req.outputs,
                    "quarto_metadata_keys": sorted(req.quarto_metadata)}
         try:
             paths, info = prepare_manuscript(req, ctx.inputs, str(ctx.workdir / "ws"),
@@ -392,7 +416,9 @@ class ManuscriptKind(Kind):
         outputs = _publish(paths["build"], result["artifacts"], ctx.outdir)
         return KindResult(outputs=outputs, outcome={
             "compliant": result.get("compliant"), "checks": result["checks"],
-            "manifest": result["manifest"], "artifacts": result["artifacts"],
+            "manifest": {**result["manifest"],
+                         "profile": {**(result["manifest"].get("profile") or {}), **prof.provenance()}},
+            "artifacts": result["artifacts"],
             "log_tail": result["log_tail"], "options": options})
 
 

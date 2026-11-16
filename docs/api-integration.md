@@ -18,6 +18,11 @@ because the existing clients use it. The bare 0.14 paths (`/compile`, `/jobs/{id
 are aliases of `/v0` that a 0.14 client can keep calling. See
 [Migrating from v0 to v1](#migrating-from-v0-to-v1).
 
+**Before you zip, ask.** `GET /svc/v1/profiles/{name}/shape` returns the layouts, the
+exact rules and an example tree for a profile's zip; `…/skeleton.zip` is a starter zip
+in that shape. Every run records the profile version and digest it was built with —
+see [profiles.md](profiles.md).
+
 ---
 
 ## Migrating from v0 to v1

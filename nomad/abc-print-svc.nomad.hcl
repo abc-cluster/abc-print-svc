@@ -70,6 +70,24 @@ variable "trusted_proxies" {
   description = "Where X-Forwarded-For is believed from: the edge and Traefik. Otherwise every caller shares the proxy's rate-limit bucket."
 }
 
+variable "profile_source" {
+  type        = string
+  default     = ""
+  description = "Published profile bundles: s3://bucket/prefix or file:///path. Empty = only the profiles baked into the worker image."
+}
+
+variable "profile_s3_endpoint" {
+  type        = string
+  default     = ""
+  description = "S3 endpoint for profile_source (empty = AWS)."
+}
+
+variable "profile_s3_credentials" {
+  type        = bool
+  default     = false
+  description = "Read profile_s3_access_key / profile_s3_secret_key from the Nomad variable nomad/jobs/<name> (a read-only key)."
+}
+
 job "abc-print-svc" {
   id          = var.name
   namespace   = "abc-apps"
@@ -154,7 +172,11 @@ job "abc-print-svc" {
         command = "sh"
         # Per job name: two front doors (a -next beside the live one) must never
         # share a run store or run directories — each would adopt the other's runs.
-        args    = ["-c", "d=/srv/dispatch/abc-print-svc/${var.name}; mkdir -p $d/state $d/runs && chown 10001 /srv/dispatch/abc-print-svc $d $d/state $d/runs && chmod 0750 /srv/dispatch/abc-print-svc $d"]
+        # profile-mirror: the published profile versions this front door has admitted
+        # runs for, copied where the worker (which has no network) can read them.
+        # profile-store: published profile bundles, when profile_source is the
+        # shared-volume store (file:///srv/dispatch/abc-print-svc/profile-store).
+        args    = ["-c", "d=/srv/dispatch/abc-print-svc/${var.name}; m=/srv/dispatch/abc-print-svc/profile-mirror; p=/srv/dispatch/abc-print-svc/profile-store; mkdir -p $d/state $d/runs $m $p && chown 10001 /srv/dispatch/abc-print-svc $d $d/state $d/runs $m $p && chmod 0750 /srv/dispatch/abc-print-svc $d $m $p"]
         network_mode = "none"
       }
       volume_mount {
@@ -201,6 +223,24 @@ job "abc-print-svc" {
         ABCPRINT_MAX_QUEUED          = "8"
         ABCPRINT_ARTIFACT_TTL_S      = "21600"
         ABCPRINT_TRUSTED_PROXIES     = var.trusted_proxies
+        ABCPRINT_PROFILE_SOURCE      = var.profile_source
+        ABCPRINT_PROFILE_MIRROR      = var.profile_source != "" ? "file:///srv/dispatch/abc-print-svc/profile-mirror" : ""
+        ABCPRINT_PROFILE_S3_ENDPOINT = var.profile_s3_endpoint
+        ABCPRINT_PROFILE_CACHE       = "/srv/dispatch/abc-print-svc/profile-mirror/.cache"
+      }
+
+      dynamic "template" {
+        for_each = var.profile_s3_credentials ? [1] : []
+        content {
+          destination = "${NOMAD_SECRETS_DIR}/profile_s3.env"
+          env         = true
+          data        = <<-EOT
+            {{- with nomadVar "nomad/jobs/${var.name}" -}}
+            ABCPRINT_PROFILE_S3_ACCESS_KEY={{ .profile_s3_access_key }}
+            ABCPRINT_PROFILE_S3_SECRET_KEY={{ .profile_s3_secret_key }}
+            {{- end }}
+          EOT
+        }
       }
 
       resources {

@@ -15,7 +15,9 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from abc_dispatch import ApiError
 
-from . import auth, capabilities
+from fastapi.responses import Response
+
+from . import auth, capabilities, profile as profiles, profile_store, shape
 from .models import FontHealth, Toolchain
 
 _bearer = HTTPBearer(
@@ -103,3 +105,65 @@ def mount_v1_info(app, require) -> None:
         substituted (e.g. Calibri → Carlito) and whether metric-compatible. A
         family not measured at image build is listed in `unmeasured`."""
         return fonts(family)
+
+    @app.get("/svc/v1/profiles", tags=["discovery"],
+             summary="Every profile, its versions and the default an unpinned request gets",
+             responses=AUTH_RESPONSES)
+    def list_profiles(p: auth.Principal = Depends(require("read"))):
+        """Published profiles (from the profile store) and those baked into the
+        worker image. Name a version as `name@version` to pin it; a bare `name`
+        gets `default`, which moves only when the operator promotes a version.
+        Every run records the version and content digest it was built with."""
+        return profiles_listing()
+
+    @app.get("/svc/v1/profiles/{ref}/shape", tags=["discovery"],
+             summary="What a zip for this profile should contain", responses=AUTH_RESPONSES)
+    def profile_shape(ref: str, p: auth.Principal = Depends(require("read"))):
+        """Ask before you zip. The layouts this profile accepts, its exact rules —
+        the ones the front door enforces, so a bundle that follows them is not
+        refused — and an annotated example tree (`path`, `role`, `pattern`,
+        `required`). `ref` is `name` (the default version) or `name@version`."""
+        return shape.shape(_profile(ref))
+
+    @app.get("/svc/v1/profiles/{ref}/skeleton.zip", tags=["discovery"],
+             summary="A starter zip in this profile's shape",
+             responses={200: {"content": {"application/zip": {}}}, **AUTH_RESPONSES})
+    def profile_skeleton(ref: str, p: auth.Principal = Depends(require("read"))):
+        """The example tree as placeholder files that pass this profile's rules.
+        Replace the contents, keep the shape."""
+        prof = _profile(ref)
+        return Response(shape.skeleton_zip(prof), media_type="application/zip", headers={
+            "Content-Disposition": f'attachment; filename="{prof.name}-{prof.version}-skeleton.zip"'})
+
+
+def _profile(ref: str):
+    try:
+        return profiles.load(ref)
+    except profiles.ProfileError as exc:
+        raise ApiError(404, "not_found", str(exc)) from None
+
+
+def profiles_listing() -> dict:
+    st = profile_store.default()
+    out: dict[str, dict] = {}
+    if st is not None:
+        for name, e in st.index()["profiles"].items():
+            out[name] = {"name": name, "default": e.get("default"), "source": st.url,
+                         "versions": [{"version": v, "digest": r["digest"], "engine": r["engine"],
+                                       "published_at": r.get("published_at"),
+                                       "bundle": (r.get("descriptor") or {}).get("bundle") or {}}
+                                      for v, r in sorted(e["versions"].items())]}
+    for name in profiles._baked_names():
+        if name in out:
+            continue
+        try:
+            prof = profiles.load(name)
+        except profiles.ProfileError as exc:
+            out[name] = {"name": name, "error": str(exc)}
+            continue
+        out[name] = {"name": name, "default": prof.version, "source": "baked",
+                     "versions": [{"version": prof.version, "digest": prof.digest,
+                                   "engine": prof.engine, "published_at": None,
+                                   "bundle": prof.bundle}]}
+    return {"store": st.url if st is not None else None,
+            "profiles": [out[k] for k in sorted(out)]}
