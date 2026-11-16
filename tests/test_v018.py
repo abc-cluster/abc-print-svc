@@ -232,3 +232,17 @@ def test_the_mirror_carries_a_signature_added_after_mirroring(store_env, tmp_pat
     assert publish.main(["sign", "biorxiv-dev@0.7", "--source", store_env, *sig]) == 0
     st.mirror_into(st.resolve("biorxiv-dev@0.7"), mir)
     assert mir.resolve("biorxiv-dev@0.7").signature == "valid"
+
+
+def test_a_signature_added_later_is_seen_without_waiting_for_the_index_ttl(
+        store_env, tmp_path, keypair, monkeypatch):
+    k, pub, kid = keypair
+    d = _mkprofile(tmp_path / "p", "0.7")
+    publish.main(["publish", d, "--source", store_env])
+    monkeypatch.setenv(profile_store.KEYS_VAR, pub)
+    st = profile_store.Store(store_env, ttl_s=3600)          # a long-lived cached index
+    with pytest.raises(profile_store.SignatureError):
+        st.resolve("biorxiv-dev@0.7")
+    sig = _sign(k, kid, "biorxiv-dev", "0.7", profile_store.dir_digest(d))
+    assert publish.main(["sign", "biorxiv-dev@0.7", "--source", store_env, *sig]) == 0
+    assert st.resolve("biorxiv-dev@0.7").signature == "valid"

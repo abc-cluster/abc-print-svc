@@ -382,7 +382,14 @@ class Store:
             return self.resolve(ref, fresh=True)
         if v is None:
             return None
-        verdict = enforce_signature(name, version, v)
+        try:
+            verdict = enforce_signature(name, version, v)
+        except SignatureError:
+            if fresh:
+                raise
+            # Signed moments ago (publish-profile.sh --sign-only)? The cached index
+            # may predate it: look once more before refusing.
+            return self.resolve(ref, fresh=True)
         return Resolved(name, version, v["digest"], v["key"], v, self.src.url, verdict)
 
     def materialize(self, r: Resolved) -> str:
