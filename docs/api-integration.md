@@ -73,11 +73,14 @@ Browser clients can read these (they are in the CORS `expose_headers`).
 - **Uploads are consumed** by the run that uses them: to resubmit, upload again.
 - **Retries.** Send an `Idempotency-Key` header on create; a retried request with
   the same key returns the first run instead of creating a second.
-- **Scopes** are unchanged: `compile` to upload and create, `read` to read.
-  Comparing two PDFs needs uploads, so it needs `compile` in practice.
+- **Scopes:** `compile` to upload and create (every `POST`/`DELETE` except tickets,
+  including `POST /v1/equivalence/runs` since 0.18.0), `read` to read.
 - **Namespaces.** `/v1/…` is the abc-dispatch contract shared by every service on
-  the kit; `/svc/v1/…` is what this service adds (toolchain, fonts). They are
-  versioned separately.
+  the kit; `/svc/v1/…` is what this service adds (profiles, zip shape, toolchain,
+  fonts). They are versioned separately.
+- **Profiles are versioned** (0.17.0+). Pin `name@version` for a reproducible
+  rebuild; every run records `outcome.options.profile` and `profile_digest`.
+  `su-fmhs@unversioned` and `su-fmhs@git-d0e8657` still resolve, to `su-fmhs@1.0.0`.
 
 ---
 
@@ -105,7 +108,8 @@ TOKEN=abcp_…
 
 curl -s -H "Authorization: Bearer $TOKEN" $SVC/v0/profiles | jq '.profiles[].ref'
 # "biorxiv-dev@0.1"
-# "su-fmhs@unversioned"
+# "canary-quarto@1"
+# "su-fmhs@1.0.0"
 ```
 
 **A whole build, end to end**, using a fixture that ships in the repo so it needs
