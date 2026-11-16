@@ -204,7 +204,7 @@ def load(ref: str) -> Profile:
         except profile_store.StoreError as exc:
             raise ProfileError(f"profile store unavailable: {exc}") from None
         if r is not None:
-            meta = {"digest": r.digest, "source": r.source,
+            meta = {"digest": r.digest, "source": r.entry.get("source") or r.source,
                     "published_at": r.entry.get("published_at")}
             if _registry() is not None:
                 return _from_descriptor(f"{r.name}@{r.version}", {**r.entry["descriptor"], **meta})

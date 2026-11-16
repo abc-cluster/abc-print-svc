@@ -288,7 +288,6 @@ def _reroot_under_src(root: str, manifest: dict) -> None:
             shutil.move(os.path.join(root, item), os.path.join(tmp, item))
     os.rename(tmp, os.path.join(root, "src"))
     manifest["files"] = sorted("src/" + f for f in manifest["files"])
-    manifest["directories"] = sorted({"src"} | {"src/" + d for d in manifest.get("directories") or []})
 
 
 def resolve_entry(root: str, manifest: dict, entry: str | None) -> str:

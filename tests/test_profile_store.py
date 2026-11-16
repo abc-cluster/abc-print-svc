@@ -192,8 +192,12 @@ def test_a_client_bundle_never_brings_code(svc, tmp_path, name):
 def test_a_flat_manuscript_zip_is_moved_under_src_and_builds(svc, tmp_path):
     """0.16.0 accepted this at the door and failed it in the worker."""
     client, _, t_a, _ = svc
-    z = _zip(tmp_path / "f.zip", {"index.qmd": "# x\n", "references.bib": "",
-                                  "figures/a.svg": "<svg xmlns='http://www.w3.org/2000/svg'/>"})
+    z = tmp_path / "f.zip"
+    with zipfile.ZipFile(z, "w") as zf:          # with directory entries, as `zip -r` writes
+        zf.writestr("figures/", "")
+        zf.writestr("index.qmd", "# x\n")
+        zf.writestr("references.bib", "")
+        zf.writestr("figures/a.svg", "<svg xmlns='http://www.w3.org/2000/svg'/>")
     r = _submit_zip(client, t_a, z)
     assert r.status_code == 202, r.text
     done = wait_terminal(client, t_a, r.json()["run_id"])
@@ -301,4 +305,10 @@ def test_the_front_door_mirrors_an_admitted_version_for_the_offline_worker(store
     worker = profile_store.Store(f"file://{mirror}", cache_dir=str(tmp_path / "wcache"), ttl_s=0)
     r = worker.resolve(run["outcome"]["options"]["profile"])
     assert profile_store.dir_digest(worker.materialize(r)) == profile_store.dir_digest(d2)
+    # ...and the run still records where the version was published, not the mirror.
+    assert run["outcome"]["manifest"]["profile"]["source"] == store_env
+    from abcprint import profile as profiles_mod
+    monkeypatch.setenv(profile_store.SOURCE_VAR, f"file://{mirror}")
+    monkeypatch.setattr(profile_store, "_DEFAULT", None)
+    assert profiles_mod.load("biorxiv-dev@0.2").source == store_env
     assert worker.resolve("biorxiv-dev@0.3") is None

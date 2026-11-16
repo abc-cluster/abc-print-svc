@@ -357,16 +357,18 @@ class Store:
             entry = idx["profiles"].setdefault(r.name, {"default": None, "versions": {}})
             have = entry["versions"].get(r.version)
             if have is not None and have["digest"] == r.digest and mirror.src.get(r.key) is not None:
-                if entry.get("default") is None:
-                    entry["default"] = r.version
-                else:
+                if entry.get("default") is not None and have.get("source"):
                     return
+                have.setdefault("source", r.entry.get("source") or self.src.url)
+                entry["default"] = entry.get("default") or r.version
             else:
                 data = self.src.get(r.key)
                 if data is None:
                     raise StoreError(f"bundle for {r.name}@{r.version} is missing at {r.key}")
                 mirror.src.put(r.key, data)
-                entry["versions"][r.version] = r.entry
+                # The mirror is a copy; a run must still record where the
+                # version was published, not the copy it was read from.
+                entry["versions"][r.version] = {**r.entry, "source": r.entry.get("source") or self.src.url}
             store_default = self.index()["profiles"].get(r.name, {}).get("default")
             if store_default == r.version or entry.get("default") is None:
                 entry["default"] = r.version
