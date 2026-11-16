@@ -11,6 +11,67 @@ files. This document is the reference behind it.
 rendered document, a **manifest** of everything that decided that output, and a
 **check report**. The renderer is the easy half; the report is the point.
 
+**Two versions of the API.** `/v1/…` is the native API and the one to write a new
+client against. `/v0/…` is the 0.14 API (multipart `compile` + `jobs`), kept
+request for request and **deprecated**; most of this document still shows it,
+because the existing clients use it. The bare 0.14 paths (`/compile`, `/jobs/{id}`)
+are aliases of `/v0` that a 0.14 client can keep calling. See
+[Migrating from v0 to v1](#migrating-from-v0-to-v1).
+
+---
+
+## Migrating from v0 to v1
+
+Both APIs create the **same runs**: a v0 job id is a v1 run id, and either API can
+read a run the other created. Moving is a change of shape, not of semantics.
+
+**How a v0 client learns it is on the old API.** Every v0 response — including a
+401, 403 or 429 — carries:
+
+```
+Deprecation: @1794787200                      # RFC 9745: deprecated since 2026-11-16
+Link: </redoc>; rel="deprecation"; type="text/html"
+Link: </v0/compile>; rel="successor-version"  # only on a bare 0.14 path
+Sunset: <HTTP-date>                           # RFC 8594: only once a date is set
+```
+
+Browser clients can read these (they are in the CORS `expose_headers`).
+
+| v0 (0.14) | v1 |
+|---|---|
+| `POST /v0/compile` multipart (`sources`, `figures`, `inserted`, `bibliography`, form fields) | one `POST /v1/uploads` per file (field `file`) → `upload_id`; then `POST /v1/thesis/runs` with JSON `{"sources": [{"upload": "upl_…", "name": "01-intro.md"}], "figures": […], "chapters": ["01"], "copy": "examination", "checks": true}` |
+| `POST /v0/compile/manuscript` | uploads, then `POST /v1/manuscript/runs` `{"profile": "biorxiv-dev", "sources": […], "outputs": ["pdf","docx"], "quarto_metadata": {…}}` — `quarto_metadata` is JSON, not a YAML string |
+| `POST /v0/compile/archive` | upload the zip, then `{"bundle": "upl_…", "profile": …}` on the thesis or manuscript runs endpoint — the profile's engine decides which |
+| `GET /v0/jobs/{id}` | `GET /v1/{kind}/runs/{id}` — or the cheaper `…/status` while polling |
+| `GET /v0/jobs` | `GET /v1/{kind}/runs` (paged with `page_token`) |
+| `GET /v0/jobs/{id}/artifacts/{name}` | `GET /v1/{kind}/runs/{id}/outputs/{name}`; `…/bundle` for all outputs as one zip |
+| a browser link to an artefact | `POST …/runs/{id}/tickets` `{"name": "<output>"}` → a one-use, 60-second `href` that needs no header |
+| `GET /v0/profiles` | `GET /v1/{kind}/options` — profiles for that kind, and the refused `quarto_metadata` keys |
+| `GET /v0/toolchain`, `/v0/fonts` | `GET /health` carries both |
+| `POST /v0/equivalence` (waits for the answer) | uploads, then `POST /v1/equivalence/runs` `{"a": "upl_…", "b": "upl_…"}`; poll; the report is the run's `outcome` |
+| `POST /v0/jobs/{id}/deliver` | no v1 equivalent — download the output instead |
+| — | `POST …/runs/{id}/cancel`, `DELETE …/runs/{id}`, `GET …/runs/{id}/log`, `GET /v1/limits` |
+
+**What changes in the answers.**
+
+- **States.** v0 `queued` = v1 `queued` or `initializing`; `running` = `running` or
+  `canceling`; `succeeded` = `complete`; `failed` = `executor_error` (the document
+  was refused or the render failed), `system_error` (the service's fault — retry),
+  `canceled` or `preempted`.
+- **The result.** v0's top-level `compliant`, `checks`, `manifest`, `log_tail` are in
+  the run's `outcome`; artefacts are `outputs`. `complete` still does **not** mean
+  compliant.
+- **Times** are ISO 8601 strings, not epoch seconds.
+- **Refusals.** A rejected bundle is **422** (v0 said 400). Every error is the
+  envelope `{"error": "<tag>", "msg": "…", "status_code": n}`; switch on `error`.
+  (v0 also sends FastAPI's `detail`.)
+- **Uploads are consumed** by the run that uses them: to resubmit, upload again.
+- **Retries.** Send an `Idempotency-Key` header on create; a retried request with
+  the same key returns the first run instead of creating a second.
+- **Scopes** are unchanged: `compile` to upload and create, `read` to read and to
+  create equivalence runs. Note: a `read`-only token cannot `POST /v1/uploads`, so
+  it can compare PDFs only through `/v0/equivalence`.
+
 ---
 
 ## 0. Get a token in, first
@@ -35,7 +96,7 @@ discover it by reading this file.)
 SVC=https://mbhg-bioinformatics-abc-print-svc.apps.seedling.abc-cluster.cloud
 TOKEN=abcp_…
 
-curl -s -H "Authorization: Bearer $TOKEN" $SVC/profiles | jq '.profiles[].ref'
+curl -s -H "Authorization: Bearer $TOKEN" $SVC/v0/profiles | jq '.profiles[].ref'
 # "biorxiv-dev@0.1"
 # "su-fmhs@unversioned"
 ```
@@ -44,17 +105,17 @@ curl -s -H "Authorization: Bearer $TOKEN" $SVC/profiles | jq '.profiles[].ref'
 nothing of your own:
 
 ```bash
-JOB=$(curl -s -X POST $SVC/compile/archive \
+JOB=$(curl -s -X POST $SVC/v0/compile/archive \
         -H "Authorization: Bearer $TOKEN" \
         -F bundle=@examples/garden-thesis-demo.zip \
         -F profile=su-fmhs -F copy=examination | jq -r .id)
 
-until [ "$(curl -s -H "Authorization: Bearer $TOKEN" $SVC/jobs/$JOB | jq -r .state)" != "queued" ] \
-   && [ "$(curl -s -H "Authorization: Bearer $TOKEN" $SVC/jobs/$JOB | jq -r .state)" != "running" ]; do sleep 2; done
+until [ "$(curl -s -H "Authorization: Bearer $TOKEN" $SVC/v0/jobs/$JOB | jq -r .state)" != "queued" ] \
+   && [ "$(curl -s -H "Authorization: Bearer $TOKEN" $SVC/v0/jobs/$JOB | jq -r .state)" != "running" ]; do sleep 2; done
 
-curl -s -H "Authorization: Bearer $TOKEN" $SVC/jobs/$JOB | jq '{state, compliant, checks}'
+curl -s -H "Authorization: Bearer $TOKEN" $SVC/v0/jobs/$JOB | jq '{state, compliant, checks}'
 curl -s -H "Authorization: Bearer $TOKEN" -o out.pdf \
-     $SVC/jobs/$JOB/artifacts/thesis-assembled.pdf
+     $SVC/v0/jobs/$JOB/artifacts/thesis-assembled.pdf
 ```
 
 ### Scopes
@@ -63,16 +124,16 @@ A token carries some subset of three:
 
 | scope | endpoints |
 |---|---|
-| `read` | `/profiles` `/toolchain` `/fonts` `/jobs` `/jobs/{id}` artefacts `/equivalence` |
-| `compile` | `/compile` `/compile/archive` `/compile/manuscript` |
-| `deliver` | `/jobs/{id}/deliver` `/delivery/destinations` |
+| `read` | `/v0/profiles` `/v0/toolchain` `/v0/fonts` `/v0/jobs` `/v0/jobs/{id}` artefacts `/v0/equivalence` |
+| `compile` | `/v0/compile` `/v0/compile/archive` `/v0/compile/manuscript` |
+| `deliver` | `/v0/jobs/{id}/deliver` `/v0/delivery/destinations` |
 
 A plugin that submits and downloads wants `compile,read` and should not hold
 `deliver` — that scope writes to an object store.
 
 ### Jobs are private to the token that created them
 
-`GET /jobs` lists only your own, and another token's job id is a **404**, not a
+`GET /v0/jobs` lists only your own, and another token's job id is a **404**, not a
 403, so the response does not confirm it exists. You cannot poll an id someone
 else gives you, and nobody can poll yours. This matters if you were planning to
 hand job ids around: don't.
@@ -98,11 +159,11 @@ All but `/health` need `Authorization: Bearer abcp_…` — see §0.
 
 ```
 GET  /health                       can this deployment build at all?  (no token)
-GET  /profiles                     what profiles exist, and what may be overridden
-POST /compile        (thesis)      or  POST /compile/manuscript   -> 202 + job id
-GET  /jobs/{id}                    poll until state is terminal
-GET  /jobs/{id}/artifacts/{name}   download
-POST /jobs/{id}/deliver            or have the service deliver it
+GET  /v0/profiles                     what profiles exist, and what may be overridden
+POST /v0/compile        (thesis)      or  POST /v0/compile/manuscript   -> 202 + job id
+GET  /v0/jobs/{id}                    poll until state is terminal
+GET  /v0/jobs/{id}/artifacts/{name}   download
+POST /v0/jobs/{id}/deliver            or have the service deliver it
 ```
 
 Start with `/health`. It returns **503** when the deployment cannot build, with
@@ -115,10 +176,10 @@ There are two **engines**, and they are different code paths, not options:
 
 | endpoint | engine | for | passes |
 |---|---|---|---|
-| `POST /compile` | `thesis-assemble` | a thesis with spliced publisher PDFs | render → measure → re-render → splice |
-| `POST /compile/manuscript` | `quarto-render` | a manuscript or preprint | one render per format |
+| `POST /v0/compile` | `thesis-assemble` | a thesis with spliced publisher PDFs | render → measure → re-render → splice |
+| `POST /v0/compile/manuscript` | `quarto-render` | a manuscript or preprint | one render per format |
 
-`GET /profiles` tells you which engine a profile uses. Posting to the wrong one
+`GET /v0/profiles` tells you which engine a profile uses. Posting to the wrong one
 returns **400** naming the right one, rather than failing obscurely later.
 
 ## 3. The job lifecycle
@@ -187,7 +248,7 @@ that is what makes a later rebuild a claim rather than a hope.
 
 ## 6. `quarto_metadata` — the escape hatch
 
-`POST /compile/manuscript` accepts a `quarto_metadata` YAML mapping, merged into the
+`POST /v0/compile/manuscript` accepts a `quarto_metadata` YAML mapping, merged into the
 metadata the render sees. It is for advanced users and it genuinely overrides.
 
 One precedence chain, lowest first:
@@ -202,7 +263,7 @@ build quarto_metadata    this field
 **Around twenty keys are refused by name** — `execute`, `engine`, `jupyter`,
 `knitr`, `filters`, `shortcodes`, `pre-render`, `post-render`, `project`,
 `template`, `include-*`, `resource-path`, `pdf-engine`, `output-*`. Each either
-runs code or reads a client-chosen path. `GET /profiles` returns the current list
+runs code or reads a client-chosen path. `GET /v0/profiles` returns the current list
 with a reason per key; read it rather than hard-coding one.
 
 Refusal is a **400 at submit time**, not a failure after a build. The bundle's own
@@ -214,15 +275,15 @@ is never a guess. Show it to the user when a render surprises them.
 ## 7. Delivery
 
 ```
-GET  /delivery/destinations        what this deployment supports
-POST /jobs/{id}/deliver            destination=downloads | minio
+GET  /v0/delivery/destinations        what this deployment supports
+POST /v0/jobs/{id}/deliver            destination=downloads | minio
 ```
 
 Check destinations first: an unconfigured one returns **503** with the environment
 variables the operator needs to set. `downloads` requires the operator to have
 mounted a directory; `minio` requires S3 credentials.
 
-**PDF password protection is not implemented.** `/delivery/destinations` reports
+**PDF password protection is not implemented.** `/v0/delivery/destinations` reports
 that explicitly. Do not tell a user a delivered file is protected.
 
 ## 8. Reproducibility — do not checksum PDFs
@@ -235,7 +296,7 @@ resource dictionaries in per-process order and stamps a random instance id.
 `SOURCE_DATE_EPOCH` is pinned by the service, which removes the timestamps but not
 the ordering. A checksum comparison will therefore report a false difference.
 
-Use `POST /equivalence` instead. It compares on four planes — page count, extracted
+Use `POST /v0/equivalence` instead. It compares on four planes — page count, extracted
 text with layout, rendered pixels, and metadata with volatile fields excluded **by
 name** so new drift still fails.
 
@@ -250,7 +311,7 @@ name** so new drift still fails.
 document:
 
 ```bash
-curl -s localhost:8080/jobs/$JOB | jq .manifest.pipeline
+curl -s localhost:8080/v0/jobs/$JOB | jq .manifest.pipeline
 ```
 
 This matters because the pipeline lives in a **separate repository** and changes
@@ -276,7 +337,7 @@ Not cosmetic. Measured on the same sources:
 | manuscript, without it | 21 |
 
 If a profile's faculty rule is measured in pages, a substituted build cannot be used
-to measure it. `GET /fonts` and the job manifest both report what actually resolved;
+to measure it. `GET /v0/fonts` and the job manifest both report what actually resolved;
 `manifest.fonts.substituted` empty means no substitution occurred.
 
 ## 10. Error shapes

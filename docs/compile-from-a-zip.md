@@ -1,6 +1,6 @@
 # Compiling from a zip (project-garden layout)
 
-`POST /compile/archive` takes a whole manuscript directory as one zip, so a
+`POST /v0/compile/archive` takes a whole manuscript directory as one zip, so a
 project created from the **abc project-garden** template can be submitted with no
 rearranging — and without an editor plugin.
 
@@ -29,13 +29,13 @@ with no assets — keeps it.
 cd writeup/manuscript
 zip -qr /tmp/manuscript.zip .
 
-curl -s -X POST http://localhost:8080/compile/archive \
+curl -s -X POST http://localhost:8080/v0/compile/archive \
   -F "bundle=@/tmp/manuscript.zip" \
   -F "profile=biorxiv-dev" \
   -F "outputs=pdf,docx" | jq
 ```
 
-Returns **202** with a job id; poll `/jobs/{id}` exactly as for the other
+Returns **202** with a job id; poll `/v0/jobs/{id}` exactly as for the other
 endpoints.
 
 ## Structure is preserved, not flattened
@@ -46,7 +46,7 @@ beside the source directory, not inside it. Flattening the archive would make
 every one of those references unresolvable, so the archive is extracted as-is and
 the profile is layered around it.
 
-The multipart endpoints (`/compile/manuscript`) take document-relative paths
+The multipart endpoints (`/v0/compile/manuscript`) take document-relative paths
 instead and require a self-contained bundle. Both are valid; the zip is the one
 that matches an existing project on disk.
 
@@ -64,7 +64,7 @@ wrong document silently is worse than asking. Name one explicitly:
 The job echoes what it found, so a mis-shaped archive is visible immediately:
 
 ```bash
-curl -s localhost:8080/jobs/$JOB | jq .options.archive
+curl -s localhost:8080/v0/jobs/$JOB | jq .options.archive
 # { "entry": "src/index.qmd", "entry_present": true, "stripped_prefix": "manuscript",
 #   "counts": { "sources": 3, "figures": 1, "tables": 1, "supplemental": 0 } }
 ```
@@ -107,7 +107,7 @@ referenced through `../assets/`:
 
 ```bash
 cd examples/garden-manuscript-demo && zip -qr /tmp/demo.zip . && cd -
-curl -s -X POST localhost:8080/compile/archive -F "bundle=@/tmp/demo.zip" -F "profile=biorxiv-dev" | jq
+curl -s -X POST localhost:8080/v0/compile/archive -F "bundle=@/tmp/demo.zip" -F "profile=biorxiv-dev" | jq
 ```
 
 ---
@@ -135,14 +135,14 @@ chapter references its figures as `figures/F1.1-x.png` — not
 cd my-thesis            # src/ + assets/ as above
 zip -qr /tmp/thesis.zip .
 
-curl -s -X POST http://localhost:8080/compile/archive \
+curl -s -X POST http://localhost:8080/v0/compile/archive \
   -F "bundle=@/tmp/thesis.zip" \
   -F "profile=su-fmhs" \
   -F "copy=examination" \
   -F "checks=true" | jq .options.archive
 ```
 
-`chapters`, `copy` and `checks` apply on this arm, exactly as on `POST /compile`.
+`chapters`, `copy` and `checks` apply on this arm, exactly as on `POST /v0/compile`.
 `entry`, `outputs` and `quarto_metadata` do not — the thesis engine builds the
 whole document and emits a PDF.
 
@@ -225,8 +225,8 @@ mapping failure. A full build picks the pages up from the archive.
 
 ### Verified against the multipart path
 
-The zip arm and the multipart `POST /compile` were run on the same document, the
-same image and the same profile, and compared with `POST /equivalence` at 110 DPI
+The zip arm and the multipart `POST /v0/compile` were run on the same document, the
+same image and the same profile, and compared with `POST /v0/equivalence` at 110 DPI
 with **every page rasterised**: equal page count, equal extracted text, 224 of
 224 pages pixel-identical, equal metadata. Submitting a zip is a different way in,
 not a different document.

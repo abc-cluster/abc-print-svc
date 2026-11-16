@@ -29,7 +29,7 @@ if not d["ok"]:
 PY
 
 say "submitting the demo manuscript…"
-job=$(curl -fsS -X POST "$BASE/compile/manuscript" \
+job=$(curl -fsS -X POST "$BASE/v0/compile/manuscript" \
   -F "sources=@$DEMO/index.qmd" \
   -F "sources=@$DEMO/_metadata.yml" \
   -F "bibliography=@$DEMO/references.bib" \
@@ -40,12 +40,12 @@ job=$(curl -fsS -X POST "$BASE/compile/manuscript" \
 say "  job $job"
 
 for _ in $(seq 1 120); do
-  state=$(curl -fsS "$BASE/jobs/$job" | python3 -c "import json,sys; print(json.load(sys.stdin)['state'])")
+  state=$(curl -fsS "$BASE/v0/jobs/$job" | python3 -c "import json,sys; print(json.load(sys.stdin)['state'])")
   case "$state" in succeeded|failed) break ;; esac
   sleep 2
 done
 
-curl -fsS "$BASE/jobs/$job" > "$OUT/job.json"
+curl -fsS "$BASE/v0/jobs/$job" > "$OUT/job.json"
 python3 - "$OUT/job.json" <<'PY'
 import json, sys, re
 d = json.load(open(sys.argv[1]))
@@ -57,7 +57,7 @@ if d["state"] != "succeeded":
     sys.exit(1)
 PY
 
-curl -fsS -o "$OUT/demo.pdf" "$BASE/jobs/$job/artifacts/index.pdf"
+curl -fsS -o "$OUT/demo.pdf" "$BASE/v0/jobs/$job/artifacts/index.pdf"
 say "  wrote $OUT/demo.pdf"
 
 # Content checks. Rendering is not enough: a build can succeed while silently

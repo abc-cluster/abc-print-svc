@@ -121,21 +121,26 @@ Two fronts onto the same runs. A 0.14 job id is a native run id.
 `…/status`, `…/log`, `…/outputs/{name}`, `…/bundle`, `POST …/cancel`, `DELETE …`;
 `/v1/limits`, `/readyz`, `/service-info`. Send an `Idempotency-Key` on create.
 
-**0.14**, unchanged for existing clients:
+**v0 — the 0.14 API, deprecated.** Unchanged request for request, now under `/v0`.
+The same routes still answer at their 0.14 paths (`/compile`, `/jobs/{id}`, …) so
+existing clients keep working; those aliases are not in the schema. Every v0
+response carries `Deprecation`, a `Link` to the docs, a bare-path response also a
+`Link` to its `/v0` successor, and `Sunset` once `ABCPRINT_V0_SUNSET` is set. New
+clients use the native API: see [migrating to v1](docs/api-integration.md#migrating-from-v0-to-v1).
 
 | method | path | purpose |
 |---|---|---|
-| POST | `/compile` | Thesis. **202** + job id. |
-| POST | `/compile/manuscript` | Manuscript. **202** + job id. |
-| POST | `/compile/archive` | A zip in project-garden layout. **202** + job id. |
-| GET | `/jobs/{id}` | State, manifest, check report, `compliant`. |
-| GET | `/jobs/{id}/artifacts/{name}` | Download an artefact. |
-| POST | `/jobs/{id}/deliver` | Deliver to `downloads` or `minio`. |
-| GET | `/profiles` | Profiles, engines, and the refused `quarto_metadata` keys. |
-| GET | `/delivery/destinations` | What this deployment can deliver to. |
+| POST | `/v0/compile` | Thesis. **202** + job id. |
+| POST | `/v0/compile/manuscript` | Manuscript. **202** + job id. |
+| POST | `/v0/compile/archive` | A zip in project-garden layout. **202** + job id. |
+| GET | `/v0/jobs/{id}` | State, manifest, check report, `compliant`. |
+| GET | `/v0/jobs/{id}/artifacts/{name}` | Download an artefact. |
+| POST | `/v0/jobs/{id}/deliver` | Deliver to `downloads` or `minio`. |
+| GET | `/v0/profiles` | Profiles, engines, and the refused `quarto_metadata` keys. |
+| GET | `/v0/delivery/destinations` | What this deployment can deliver to. |
 | GET | `/health` | Can this deployment build? **503** when not. |
-| GET | `/toolchain` · `/fonts` | What rendered this; what will actually render. |
-| POST | `/equivalence` | Are two builds the same document? |
+| GET | `/v0/toolchain` · `/v0/fonts` | What rendered this; what will actually render. |
+| POST | `/v0/equivalence` | Are two builds the same document? |
 
 ## What slice 1 established
 
@@ -169,7 +174,7 @@ with volatile fields excluded **by name**, so a *new* source of drift still fail
 `quarto typst --version` reports **0.13.0** while `typst --version` on PATH reports
 **0.13.1**, and the PDF's `/Creator` records 0.13.0. **Pagination is decided by the
 bundled one.** Pinning a standalone typst pins a binary nothing reads, so the image
-ships none and `/toolchain` reports `typst_mismatch` when one shadows the bundled
+ships none and `/v0/toolchain` reports `typst_mismatch` when one shadows the bundled
 version.
 
 ### Fonts
@@ -203,7 +208,7 @@ correct, all checks passing, but a **6-page difference**. Since the faculty leng
 rule is measured in **pages**, a substitution is a compliance event, not a
 cosmetic one. `on_substitution` defaults to `fail`, and a
 substitution is always declared. Whether a given substitution preserves pagination
-is a *measurable* question — render both ways and compare with `/equivalence`.
+is a *measurable* question — render both ways and compare with `/v0/equivalence`.
 
 **Open — needs SU IT:** whether the site licence covers a server rendering for many
 users. If not, the libre set is the fallback and the length rule must be checked

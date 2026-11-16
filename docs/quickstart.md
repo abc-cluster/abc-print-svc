@@ -47,7 +47,7 @@ can paste it into a script.
 ## 3. Check your token works
 
 ```bash
-curl -s -H "Authorization: Bearer $TOKEN" $SVC/profiles | jq '.profiles[].ref'
+curl -s -H "Authorization: Bearer $TOKEN" $SVC/v0/profiles | jq '.profiles[].ref'
 ```
 
 ```
@@ -87,7 +87,7 @@ EOF
 Send it:
 
 ```bash
-JOB=$(curl -s -X POST $SVC/compile/archive \
+JOB=$(curl -s -X POST $SVC/v0/compile/archive \
         -H "Authorization: Bearer $TOKEN" \
         -F bundle=@paper.zip \
         -F profile=biorxiv-dev | jq -r .id)
@@ -105,7 +105,7 @@ Poll until it finishes:
 
 ```bash
 while true; do
-  STATE=$(curl -s -H "Authorization: Bearer $TOKEN" $SVC/jobs/$JOB | jq -r .state)
+  STATE=$(curl -s -H "Authorization: Bearer $TOKEN" $SVC/v0/jobs/$JOB | jq -r .state)
   echo $STATE
   case $STATE in succeeded|failed) break;; esac
   sleep 2
@@ -116,13 +116,13 @@ Download it:
 
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" -o paper.pdf \
-     $SVC/jobs/$JOB/artifacts/index.pdf
+     $SVC/v0/jobs/$JOB/artifacts/index.pdf
 ```
 
 If the job failed, `error` and `log_tail` say why:
 
 ```bash
-curl -s -H "Authorization: Bearer $TOKEN" $SVC/jobs/$JOB | jq '{state, error, log_tail}'
+curl -s -H "Authorization: Bearer $TOKEN" $SVC/v0/jobs/$JOB | jq '{state, error, log_tail}'
 ```
 
 ## 5. Build a thesis chapter, and read the report
@@ -182,19 +182,19 @@ EOF
 ```
 
 ```bash
-JOB=$(curl -s -X POST $SVC/compile/archive \
+JOB=$(curl -s -X POST $SVC/v0/compile/archive \
         -H "Authorization: Bearer $TOKEN" \
         -F bundle=@thesis.zip \
         -F profile=su-fmhs \
         -F copy=examination | jq -r .id)
 
 while true; do
-  STATE=$(curl -s -H "Authorization: Bearer $TOKEN" $SVC/jobs/$JOB | jq -r .state)
+  STATE=$(curl -s -H "Authorization: Bearer $TOKEN" $SVC/v0/jobs/$JOB | jq -r .state)
   case $STATE in succeeded|failed) break;; esac
   sleep 2
 done
 
-curl -s -H "Authorization: Bearer $TOKEN" $SVC/jobs/$JOB \
+curl -s -H "Authorization: Bearer $TOKEN" $SVC/v0/jobs/$JOB \
   | jq '{state, compliant, passed: .checks.passed, failed: .checks.failed, failures: .checks.failures}'
 ```
 
@@ -221,14 +221,14 @@ placeholders, which check `C1` fails on.
 
 ## 6. Your token's scopes
 
-A token carries some of three scopes. Call `/profiles` and look at the response,
+A token carries some of three scopes. Call `/v0/profiles` and look at the response,
 or just try the call — a missing scope gives a clear `403`.
 
 | scope | what it opens |
 |---|---|
-| `read` | `/profiles` `/toolchain` `/fonts` `/jobs` `/jobs/{id}` artefacts `/equivalence` |
-| `compile` | `/compile` `/compile/archive` `/compile/manuscript` |
-| `deliver` | `/jobs/{id}/deliver` `/delivery/destinations` |
+| `read` | `/v0/profiles` `/v0/toolchain` `/v0/fonts` `/v0/jobs` `/v0/jobs/{id}` artefacts `/v0/equivalence` |
+| `compile` | `/v0/compile` `/v0/compile/archive` `/v0/compile/manuscript` |
+| `deliver` | `/v0/jobs/{id}/deliver` `/v0/delivery/destinations` |
 
 ## 7. Errors
 
@@ -256,7 +256,7 @@ fills the queue and blocks other people.
 Instead of downloading, the service can put the file somewhere for you:
 
 ```bash
-curl -s -X POST $SVC/jobs/$JOB/deliver \
+curl -s -X POST $SVC/v0/jobs/$JOB/deliver \
   -H "Authorization: Bearer $TOKEN" \
   -F artifact=thesis-assembled.pdf \
   -F destination=downloads \
@@ -267,7 +267,7 @@ Check what the deployment supports first, so you find out now rather than after 
 build:
 
 ```bash
-curl -s -H "Authorization: Bearer $TOKEN" $SVC/delivery/destinations | jq
+curl -s -H "Authorization: Bearer $TOKEN" $SVC/v0/delivery/destinations | jq
 ```
 
 Both destinations are scoped to your token. `downloads` writes to a folder named
@@ -280,7 +280,7 @@ Two things to know before you build this into a UI:
 
 - **`downloads` needs the operator to have mounted a directory.** If they have not,
   the file lands inside the container and is lost on restart.
-  `/delivery/destinations` shows the path. Ask whether it is a real mount.
+  `/v0/delivery/destinations` shows the path. Ask whether it is a real mount.
 - **PDF password protection is not implemented.** A delivered file is not
   protected.
 

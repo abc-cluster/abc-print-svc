@@ -47,7 +47,7 @@ NOTE: no thesis pipeline at /…/PHD-dissertation/writeup/bin
       building WITHOUT the thesis-assemble engine (quarto-render still works).
 ```
 
-and continues. The resulting image runs everything except `POST /compile`, which
+and continues. The resulting image runs everything except `POST /v0/compile`, which
 returns **503** naming the reason rather than failing a job thirty seconds in.
 
 Check what an image can do:

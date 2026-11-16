@@ -23,6 +23,14 @@ Status codes are 0.14's: a refused bundle is 400 (the native API says 422), a
 missing scope 403, an expired artefact 410, a full queue 429 with Retry-After.
 Bodies carry the kit's envelope (`error`, `msg`, `status_code`) AND `detail`,
 which is what a 0.14 client reads.
+
+Where it lives (0.15.1): under **/v0** — `/v0/compile`, `/v0/jobs/{id}`, … —
+which is the documented home of this API. The unprefixed 0.14 paths answer
+exactly the same, but are kept out of the schema as aliases so that a client
+written against 0.14 does not break. Both carry `Deprecation` (RFC 9745) and a
+`Link` to the docs; `Sunset` (RFC 8594) is sent once ABCPRINT_V0_SUNSET is set.
+A bare-path response also links its /v0 successor. `/health` is not part of
+this: it is the deployment's health check and stays where it is.
 """
 from __future__ import annotations
 
@@ -35,8 +43,12 @@ import time
 from pathlib import Path
 from typing import Mapping, Optional
 
+import calendar
+from email.utils import formatdate
+
 import yaml
-from fastapi import Depends, File, Form, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from starlette.datastructures import MutableHeaders
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import ValidationError
@@ -87,7 +99,9 @@ def job_json(run: RunRecord, extra: dict | None = None) -> dict:
         "created": run.created_at, "started": started, "finished": finished,
         "duration_s": round((finished or time.time()) - (started or run.created_at), 1),
         "options": options,
-        "artifacts": out.get("artifacts", []) if run.state == State.COMPLETE else [],
+        # A run deleted through the native API (or reclaimed) still answers as a
+        # job, but must not list artefacts that can no longer be downloaded.
+        "artifacts": out.get("artifacts", []) if run.state == State.COMPLETE and not _gone(run) else [],
         "compliant": out.get("compliant"),
         "manifest": out.get("manifest", {}),
         "checks": out.get("checks", {}),
@@ -100,6 +114,67 @@ def job_json(run: RunRecord, extra: dict | None = None) -> dict:
     if extra:
         body.update(extra)
     return body
+
+
+def _gone(run: RunRecord) -> bool:
+    return bool(run.deleted_at is not None or run.expired or
+                (run.expires_at is not None and run.expires_at <= time.time()))
+
+
+# ── /v0 and the deprecated aliases ──────────────────────────────────────────
+
+V0 = "/v0"
+DEPRECATED_ON = "2026-11-16"        # the release that moved this API under /v0
+SUNSET_VAR = "ABCPRINT_V0_SUNSET"   # YYYY-MM-DD; unset = no Sunset header
+
+
+def _epoch(day: str) -> int:
+    return calendar.timegm(time.strptime(day, "%Y-%m-%d"))
+
+
+class V0Headers:
+    """Marks every response of the 0.14 API, at /v0 and at its bare alias.
+
+    ASGI middleware rather than a dependency, so refusals (401, 403, 429) and
+    file downloads carry the headers too — a client learns it is on a deprecated
+    path from whatever it gets back. It also keeps `Location` in the namespace
+    the caller used.
+    """
+
+    def __init__(self, app, *, routes, sunset: str | None):
+        self.app = app
+        self.routes = routes
+        self.fixed = [("deprecation", f"@{_epoch(DEPRECATED_ON)}"),
+                      ("link", '</redoc>; rel="deprecation"; type="text/html"')]
+        if sunset:
+            self.fixed.append(("sunset", formatdate(_epoch(sunset), usegmt=True)))
+
+    def _legacy(self, path: str) -> bool:
+        return any(r.path_regex.match(path) for r in self.routes)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        path = scope["path"]
+        under_v0 = path.startswith(V0 + "/")
+        bare = path[len(V0):] if under_v0 else path
+        if not self._legacy(bare):
+            return await self.app(scope, receive, send)
+
+        async def marked(msg):
+            if msg["type"] == "http.response.start":
+                h = MutableHeaders(scope=msg)
+                for k, v in self.fixed:
+                    h.append(k, v)
+                if under_v0:
+                    loc = h.get("location")
+                    if loc and loc.startswith("/") and not loc.startswith(V0 + "/"):
+                        h["location"] = V0 + loc
+                else:
+                    h.append("link", f'<{V0}{bare}>; rel="successor-version"')
+            await send(msg)
+
+        await self.app(scope, receive, marked)
 
 
 def _ref(name: str | None) -> str | None:
@@ -123,6 +198,7 @@ def _requested_options(kind: str, req: dict) -> dict:
 def mount_legacy(app, *, store, storage, admission, executor, kinds: dict, authenticator,
                  settings, cors_origins: list[str], env: Mapping[str, str]) -> None:
     limiter = app.state.rate_limiter
+    router = APIRouter()
     eq_wait_s = float(env.get("ABCPRINT_EQUIVALENCE_WAIT_S", "600"))
 
     def client_ip(request: Request) -> str:
@@ -246,7 +322,9 @@ def mount_legacy(app, *, store, storage, admission, executor, kinds: dict, authe
     @app.get("/", include_in_schema=False)
     def index():
         return {"service": "abc-print-svc", "version": settings.service_version,
-                "reference": "/redoc", "try_it_out": "/docs", "schema": "/openapi.json"}
+                "reference": "/redoc", "try_it_out": "/docs", "schema": "/openapi.json",
+                "api": {"v1": "/v1/{thesis|manuscript|equivalence}/runs",
+                        "v0": f"{V0}/compile, {V0}/jobs/{{id}} — the 0.14 API, deprecated"}}
 
     @app.get("/health", tags=["health"], response_model=Health,
              summary="Can this deployment build?",
@@ -274,7 +352,7 @@ def mount_legacy(app, *, store, storage, admission, executor, kinds: dict, authe
                 "executor": executor.name, "store": store.kind}
         return JSONResponse(body, status_code=200 if not problems else 503)
 
-    @app.get("/toolchain", tags=["health"], response_model=ToolchainModel,
+    @router.get("/toolchain", tags=["v0 · health"], response_model=ToolchainModel,
              summary="What rendered this document?", responses=AUTH_RESPONSES)
     def get_toolchain(p: auth.Principal = Depends(require("read"))):
         rec = capabilities.load() or {}
@@ -282,7 +360,7 @@ def mount_legacy(app, *, store, storage, admission, executor, kinds: dict, authe
         return {**{k: v for k, v in tc.items() if k != "problems"},
                 "pipeline": rec.get("pipeline")}
 
-    @app.get("/fonts", tags=["health"], response_model=FontHealth,
+    @router.get("/fonts", tags=["v0 · health"], response_model=FontHealth,
              summary="Which family will actually render?", responses=AUTH_RESPONSES)
     def get_fonts(family: list[str] | None = Query(
             default=None, description="Families to resolve. Defaults to the profile's required set."),
@@ -291,7 +369,7 @@ def mount_legacy(app, *, store, storage, admission, executor, kinds: dict, authe
         return capabilities.font_health(family or (rec.get("fonts") or {}).get("required")
                                         or capabilities.REQUIRED_FONTS)
 
-    @app.get("/profiles", tags=["compile"], response_model=ProfileList,
+    @router.get("/profiles", tags=["v0 · compile"], response_model=ProfileList,
              summary="Profiles this deployment offers", responses=AUTH_RESPONSES)
     def list_profiles(p: auth.Principal = Depends(require("read"))):
         out = []
@@ -341,7 +419,7 @@ def mount_legacy(app, *, store, storage, admission, executor, kinds: dict, authe
                         for e in exc.errors()]
             raise _err(400, "invalid_request", "; ".join(problems), problems=problems)
 
-    @app.post("/compile", tags=["compile"], status_code=202,
+    @router.post("/compile", tags=["v0 · compile"], status_code=202,
               summary="Submit sources for compilation (thesis-assemble)",
               responses={202: {"description": "Accepted. Poll `/jobs/{id}`."},
                          400: {"description": "The bundle was rejected; the message names why."},
@@ -377,7 +455,7 @@ def mount_legacy(app, *, store, storage, admission, executor, kinds: dict, authe
                                           "chapters": req.chapters or info.get("detected_chapters"),
                                           "identity": info.get("identity")}})
 
-    @app.post("/compile/manuscript", tags=["compile"], status_code=202,
+    @router.post("/compile/manuscript", tags=["v0 · compile"], status_code=202,
               summary="Compile a manuscript (quarto-render engine)",
               responses={202: {"description": "Accepted. Poll `/jobs/{id}`."},
                          400: {"description": "Bundle or quarto_metadata rejected."},
@@ -407,7 +485,7 @@ def mount_legacy(app, *, store, storage, admission, executor, kinds: dict, authe
             raise
         return accepted(submit(p, "manuscript", req, uploads))
 
-    @app.post("/compile/archive", tags=["compile"], status_code=202,
+    @router.post("/compile/archive", tags=["v0 · compile"], status_code=202,
               summary="Compile from a zip archive (project-garden layout)",
               responses={202: {"description": "Accepted. Poll `/jobs/{id}`."},
                          400: {"description": "The archive was refused; the message names why."},
@@ -455,7 +533,7 @@ def mount_legacy(app, *, store, storage, admission, executor, kinds: dict, authe
             drop([rec])
             raise
 
-    @app.get("/jobs", tags=["compile"], response_model=JobList, summary="Recent jobs",
+    @router.get("/jobs", tags=["v0 · compile"], response_model=JobList, summary="Recent jobs",
              responses=AUTH_RESPONSES)
     def list_jobs(limit: int = Query(20, ge=1, le=200), p: auth.Principal = Depends(require("read"))):
         runs: list[RunRecord] = []
@@ -465,12 +543,12 @@ def mount_legacy(app, *, store, storage, admission, executor, kinds: dict, authe
         runs.sort(key=lambda r: r.created_at, reverse=True)
         return {"jobs": [job_json(r) for r in runs[:limit]]}
 
-    @app.get("/jobs/{job_id}", tags=["compile"], response_model=JobModel,
+    @router.get("/jobs/{job_id}", tags=["v0 · compile"], response_model=JobModel,
              summary="Job state, manifest and check report", responses=AUTH_RESPONSES)
     def get_job(job_id: str, p: auth.Principal = Depends(require("read"))):
         return job_json(owned_job(job_id, p))
 
-    @app.get("/jobs/{job_id}/artifacts/{name}", tags=["compile"], summary="Download an artefact",
+    @router.get("/jobs/{job_id}/artifacts/{name}", tags=["v0 · compile"], summary="Download an artefact",
              responses={200: {"content": {"application/octet-stream": {}}},
                         409: {"description": "The job has not succeeded."},
                         410: {"description": "The job's workspace has been reclaimed."},
@@ -481,7 +559,7 @@ def mount_legacy(app, *, store, storage, admission, executor, kinds: dict, authe
 
     # --- delivery ---------------------------------------------------------------
 
-    @app.get("/delivery/destinations", tags=["delivery"],
+    @router.get("/delivery/destinations", tags=["v0 · delivery"],
              summary="Which destinations this deployment can actually use", responses=AUTH_RESPONSES)
     def delivery_destinations(p: auth.Principal = Depends(require("deliver"))):
         return {
@@ -492,7 +570,7 @@ def mount_legacy(app, *, store, storage, admission, executor, kinds: dict, authe
             "pdf_password_protection": {"implemented": False, "note": "deferred by decision"},
         }
 
-    @app.post("/jobs/{job_id}/deliver", tags=["delivery"], response_model=DeliveryResult,
+    @router.post("/jobs/{job_id}/deliver", tags=["v0 · delivery"], response_model=DeliveryResult,
               summary="Deliver an artefact",
               responses={503: {"description": "That destination is not configured here."},
                          **AUTH_RESPONSES})
@@ -516,7 +594,7 @@ def mount_legacy(app, *, store, storage, admission, executor, kinds: dict, authe
 
     # --- equivalence: a run, answered synchronously as 0.14 did -----------------
 
-    @app.post("/equivalence", tags=["verification"], response_model=Equivalence,
+    @router.post("/equivalence", tags=["v0 · verification"], response_model=Equivalence,
               summary="Are these two builds the same document?",
               responses={422: {"description": "One of the uploads could not be read as a PDF."},
                          **AUTH_RESPONSES})
@@ -544,3 +622,9 @@ def mount_legacy(app, *, store, storage, admission, executor, kinds: dict, authe
         if run.state == State.EXECUTOR_ERROR:
             raise _err(422, "invalid_request", run.state_reason or "could not read one of the PDFs")
         raise _err(503, "comparison_failed", run.state_reason or f"the comparison {run.state.value}")
+
+    # The documented home is /v0. The same routes stay at their 0.14 paths, out of
+    # the schema, so a 0.14 client keeps working until the aliases are sunset.
+    app.include_router(router, prefix=V0, deprecated=True)
+    app.include_router(router, include_in_schema=False, deprecated=True)
+    app.add_middleware(V0Headers, routes=list(router.routes), sunset=env.get(SUNSET_VAR) or None)

@@ -15,8 +15,9 @@ Three kinds, because they are three different things with three request schemas:
 ``/v1/{kind}/runs``.
 
 The 0.14 API — ``/compile``, ``/compile/archive``, ``/compile/manuscript``,
-``/jobs``, artefacts, delivery, ``/profiles``, ``/equivalence`` and the health
-endpoints — is kept, request for request, because an editor plugin and scripts
+``/jobs``, artefacts, delivery, ``/profiles``, ``/equivalence``, ``/toolchain``
+and ``/fonts`` — lives under ``/v0`` since 0.15.1, with the bare paths kept as
+deprecated aliases (see legacy.py). It is kept, request for request, because an editor plugin and scripts
 call it. It is a second front onto the SAME runs: a multipart request is stored
 as uploads and created as a run through the same validation, admission and
 executor as the native API, so a job id is a run id and both views agree.
@@ -60,7 +61,7 @@ from . import (archive, auth, capabilities, compile as compiler, delivery, equiv
                identity, profile as profiles, workspace)
 from .runner import TimedOut
 
-__version__ = "0.15.0"
+__version__ = "0.15.1"
 
 GRACE_S = float(os.environ.get("ABCPRINT_GRACE_S", "30"))
 KINDS = ("thesis", "manuscript", "equivalence")
@@ -580,9 +581,12 @@ reports. Two ways in, onto the same runs:
 * the **native API** — upload with `POST /v1/uploads`, then `POST /v1/thesis/runs`
   or `POST /v1/manuscript/runs`, poll `…/status`, read `outcome` (`compliant`,
   `checks`, `manifest`), fetch `outputs`;
-* the **0.14 API** — `POST /compile`, `/compile/archive`, `/compile/manuscript`,
-  poll `GET /jobs/{id}`, download `/jobs/{id}/artifacts/{name}`. A job id is a
-  run id.
+* the **0.14 API, under `/v0`** — `POST /v0/compile`, `/v0/compile/archive`,
+  `/v0/compile/manuscript`, poll `GET /v0/jobs/{id}`, download
+  `/v0/jobs/{id}/artifacts/{name}`. A job id is a run id. **Deprecated**: new
+  clients use the native API. The same routes still answer at their 0.14 paths
+  (`/compile`, `/jobs/{id}`, …) so existing clients keep working; every v0
+  response carries a `Deprecation` header, and a `Sunset` date once one is set.
 
 Tokens start `abcp_` and carry scopes: `read`, `compile`, `deliver`.
 `succeeded` (0.14) / `complete` (native) does **not** mean compliant: a document
@@ -636,7 +640,8 @@ def build(env: Mapping[str, str] = os.environ):
     origins = [o.strip() for o in env.get("ABCPRINT_CORS_ORIGINS", "*").split(",") if o.strip()]
     app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=False,
                        allow_methods=["GET", "POST", "DELETE", "OPTIONS"], allow_headers=["*"],
-                       expose_headers=["Content-Disposition", "Location", "Retry-After"])
+                       expose_headers=["Content-Disposition", "Location", "Retry-After",
+                                       "Deprecation", "Sunset", "Link"])
     if has_vendor:
         app.mount("/vendor", StaticFiles(directory=vendor), name="vendor")
 

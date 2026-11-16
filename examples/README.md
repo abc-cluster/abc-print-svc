@@ -75,13 +75,13 @@ Two things worth knowing when sending them:
   an `@`, because `@` would upload it as a file part.
 - What was actually merged is returned, so it is never a guess:
   ```bash
-  curl -s localhost:8080/jobs/$JOB | jq .manifest.effective_quarto_metadata
+  curl -s localhost:8080/v0/jobs/$JOB | jq .manifest.effective_quarto_metadata
   ```
 
 The profile is not sent; read the live one instead:
 
 ```bash
-curl -s localhost:8080/profiles | jq '.profiles[] | select(.name=="biorxiv-dev")'
+curl -s localhost:8080/v0/profiles | jq '.profiles[] | select(.name=="biorxiv-dev")'
 ```
 
 > A `build.yaml` — declaring chapters, their kind, front-matter order and
@@ -93,7 +93,7 @@ curl -s localhost:8080/profiles | jq '.profiles[] | select(.name=="biorxiv-dev")
 
 ```bash
 cd examples/manuscript-demo
-curl -s -X POST http://localhost:8080/compile/manuscript \
+curl -s -X POST http://localhost:8080/v0/compile/manuscript \
   -F "sources=@index.qmd" \
   -F "sources=@_metadata.yml" \
   -F "bibliography=@references.bib" \
@@ -114,12 +114,12 @@ thesis pipeline. Check first:
 curl -s localhost:8080/health | jq .engines_available
 ```
 
-If `thesis-assemble` is `false`, that image cannot build it and `POST /compile`
+If `thesis-assemble` is `false`, that image cannot build it and `POST /v0/compile`
 returns 503 saying so. See [docs/building.md](../docs/building.md).
 
 ```bash
 cd examples/thesis-chapter-demo
-curl -s -X POST http://localhost:8080/compile \
+curl -s -X POST http://localhost:8080/v0/compile \
   -F "sources=@01-introduction.md" \
   -F "bibliography=@references.bib" \
   -F "figures=@figures/F1.1-placeholder.svg;filename=F1.1-placeholder.svg" \
