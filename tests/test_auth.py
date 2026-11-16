@@ -52,13 +52,15 @@ def test_health_is_open_because_the_probe_needs_it(svc):
     client, _, _, _ = svc
     r = client.get("/health")
     assert r.status_code in (200, 503)
-    # And it says what the gate is doing, so an open deployment is visible.
-    assert r.json()["auth"]["mode"] == "token"
-    assert r.json()["auth"]["tokens"] == 2
+    # Open, so it says only whether the deployment can build — not how many
+    # tokens exist, the CORS origins or the capacity (0.16.0).
+    assert set(r.json()) == {"ok", "problems", "warnings", "engines_available"}
+    assert r.json()["warnings"] == []
 
 
 @pytest.mark.parametrize("path", ["/jobs", "/profiles", "/toolchain", "/fonts",
-                                  "/v1/thesis/runs", "/v1/limits"])
+                                  "/v1/thesis/runs", "/v1/limits",
+                                  "/svc/v1/toolchain", "/svc/v1/fonts"])
 def test_no_token_is_refused(svc, path):
     client, _, _, _ = svc
     r = client.get(path)
@@ -165,15 +167,14 @@ def test_no_tokens_configured_refuses_everything_rather_than_allowing_it(make_sv
     assert r.status_code == 503
     assert auth.ENV_VAR in r.json()["detail"]
     assert client.get("/v1/thesis/runs").status_code == 503
-    assert client.get("/health").json()["auth"]["mode"] == "no-tokens"
+    assert auth.ENV_VAR in client.get("/health").json()["warnings"][0]
 
 
 def test_auth_can_be_switched_off_but_says_so_loudly(make_svc):
     client, _ = make_svc(None, disabled=True)
     assert client.get("/jobs").status_code == 200
-    state = client.get("/health").json()["auth"]
-    assert state["mode"] == "disabled"
-    assert "warning" in state                  # never silently open
+    warnings = client.get("/health").json()["warnings"]
+    assert warnings and "disabled" in warnings[0]   # never silently open
 
 
 def test_a_malformed_token_table_stops_the_service_starting(make_svc):

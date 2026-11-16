@@ -78,15 +78,13 @@ class FontHealth(BaseModel):
 
 
 class Health(BaseModel):
+    """Open, for the Nomad check and for a client deciding whether to submit.
+    The detail is read-scoped: `/svc/v1/toolchain`, `/svc/v1/fonts`; capacity is `/v1/limits`."""
     ok: bool = Field(..., description="False when anything would break a build. Returns HTTP 503.")
     problems: list[str] = Field(default_factory=list, description="Human-readable, each naming the rule broken.")
-    toolchain: Toolchain
-    typst_mismatch: bool = False
-    fonts: FontHealth
-    cors_allowed_origins: list[str] = Field(
+    warnings: list[str] = Field(
         default_factory=list,
-        description=("Origins this deployment accepts browser calls from. `[\"*\"]` means any. "
-                     "Set ABCPRINT_CORS_ORIGINS to restrict."))
+        description="Not a build breaker, but an operator must know — e.g. authentication switched off.")
     engines_available: dict = Field(
         default_factory=dict,
         description=("Which engines this image can run. `thesis-assemble` is false when the "

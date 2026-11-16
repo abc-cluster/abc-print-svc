@@ -217,8 +217,8 @@ def test_the_queue_is_bounded_and_refuses_with_retry_after(make_svc, tmp_path):
     assert third.status_code == 429
     assert int(third.headers["Retry-After"]) >= 1
     assert third.json()["error"] in ("queue_full", "caller_quota_exceeded")
-    health = client.get("/health").json()["capacity"]
-    assert health["max_renders"] == 1 and health["max_queued"] == 1
+    limits = client.get("/v1/limits", headers=h(t)).json()["global"]
+    assert limits["max_running"] == 1 and limits["max_queued"] == 1
     make_svc.engines.release.set()
     for r in (first, second):
         assert wait_terminal(client, t, r.json()["id"])["state"] == "succeeded"
@@ -282,31 +282,40 @@ def test_the_front_door_needs_only_the_exported_registry(make_svc, tmp_path, mon
                        data={"profile": "nosuch"}).json()["detail"].startswith("unknown profile")
 
 
-def test_equivalence_answers_synchronously_as_before(svc, monkeypatch):
+def test_svc_toolchain_and_fonts_match_v0(svc):
+    """0.16.0: service-specific detail lives under /svc/v1; /v0 answers the same."""
     client, _, t_a, _ = svc
+    for path in ("toolchain", "fonts"):
+        new = client.get(f"/svc/v1/{path}", headers=h(t_a))
+        assert new.status_code == 200 and "deprecation" not in new.headers
+        assert new.json() == client.get(f"/v0/{path}", headers=h(t_a)).json()
+    assert client.get("/svc/v1/toolchain", headers=h(t_a)).json()["quarto"] == "1.7.31"
+    odd = client.get("/svc/v1/fonts", headers=h(t_a), params={"family": "Comic Sans MS"}).json()
+    assert odd["unmeasured"] == ["Comic Sans MS"]
+    paths = client.get("/openapi.json").json()["paths"]
+    assert "/svc/v1/toolchain" in paths and "/svc/v1/fonts" in paths
+
+
+def test_the_synchronous_equivalence_endpoint_is_gone(svc, monkeypatch):
+    client, _, t_a, _ = svc
+    for path in ("/equivalence", "/v0/equivalence"):
+        r = client.post(path, headers=h(t_a), files={"a": ("a.pdf", b"x"), "b": ("b.pdf", b"y")})
+        assert r.status_code in (404, 405), path
+    # The comparison itself is a v1 run.
 
     class Rep:
         def as_dict(self):
-            return {"equivalent": True, "pages": [3, 3], "text_equal": True,
-                    "pixel_pages_checked": [1, 2, 3], "pixel_mismatches": [], "meta_equal": True,
-                    "meta_diff": {}, "failures": [], "volatile_excluded": ["/ID[1]"]}
-
+            return {"equivalent": True, "pages": [3, 3]}
     monkeypatch.setattr(equivalence, "compare", lambda a, b, dpi, sample: Rep())
-    r = client.post("/equivalence", headers=h(t_a),
-                    files={"a": ("x.pdf", b"%PDF-1"), "b": ("x.pdf", b"%PDF-1")})
-    assert r.status_code == 200 and r.json()["equivalent"] is True
-    assert r.json()["pages"] == [3, 3]
-
-
-def test_equivalence_of_an_unreadable_pdf_is_422(svc, monkeypatch):
-    client, _, t_a, _ = svc
-
-    def boom(*a, **k):
-        raise ValueError("not a PDF")
-
-    monkeypatch.setattr(equivalence, "compare", boom)
-    r = client.post("/equivalence", headers=h(t_a), files={"a": ("a.pdf", b"x"), "b": ("b.pdf", b"y")})
-    assert r.status_code == 422 and "not a PDF" in r.json()["detail"]
+    ups = [client.post("/v1/uploads", headers=h(t_a), files={"file": (n, b"%PDF-1")}).json()["upload_id"]
+           for n in ("a.pdf", "b.pdf")]
+    run = client.post("/v1/equivalence/runs", headers=h(t_a), json={"a": ups[0], "b": ups[1]}).json()
+    for _ in range(200):
+        st = client.get(f"/v1/equivalence/runs/{run['run_id']}", headers=h(t_a)).json()
+        if st["state"] == "complete":
+            break
+        time.sleep(0.05)
+    assert st["state"] == "complete" and st["outcome"]["equivalent"] is True
 
 
 def test_delivery_to_downloads_lands_in_the_callers_folder(svc, tmp_path, monkeypatch):

@@ -3,7 +3,7 @@ from conftest import garden_thesis_zip, h, wait_terminal
 
 LEGACY = ["/compile", "/compile/manuscript", "/compile/archive", "/jobs", "/jobs/{job_id}",
           "/jobs/{job_id}/artifacts/{name}", "/delivery/destinations", "/jobs/{job_id}/deliver",
-          "/equivalence", "/profiles", "/toolchain", "/fonts"]
+          "/profiles", "/toolchain", "/fonts"]
 
 
 def _archive(client, tok, tmp_path, prefix):

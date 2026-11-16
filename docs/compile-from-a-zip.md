@@ -226,7 +226,7 @@ mapping failure. A full build picks the pages up from the archive.
 ### Verified against the multipart path
 
 The zip arm and the multipart `POST /v0/compile` were run on the same document, the
-same image and the same profile, and compared with `POST /v0/equivalence` at 110 DPI
+same image and the same profile, and compared with the equivalence endpoint at 110 DPI
 with **every page rasterised**: equal page count, equal extracted text, 224 of
 224 pages pixel-identical, equal metadata. Submitting a zip is a different way in,
 not a different document.

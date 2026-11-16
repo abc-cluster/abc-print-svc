@@ -129,7 +129,9 @@ look like the service being down rather than refusing.
 The default allows **any** origin, so a plugin works out of the box:
 
 ```bash
-curl -s localhost:8080/health | jq .cors_allowed_origins   # ["*"]
+curl -s -o /dev/null -D - -X OPTIONS localhost:8080/v1/limits \
+  -H "Origin: app://logseq.com" -H "Access-Control-Request-Method: GET" \
+  | grep -i access-control-allow-origin     # * or the origin, when allowed
 ```
 
 Restrict it for anything not on a laptop:

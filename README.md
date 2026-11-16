@@ -114,6 +114,19 @@ A profile with no rules reports `compliant: null`, never `true`.
 
 ## Endpoints
 
+**Where a route lives says who owns it.**
+
+| prefix | owner | versioned with |
+|---|---|---|
+| `/v1/…` | abc-dispatch: uploads, `/v1/{kind}/runs`, `/v1/limits` | the abc-dispatch contract (`/v2` when the kit breaks it) |
+| `/svc/v1/…` | this service: `/svc/v1/toolchain`, `/svc/v1/fonts` | abc-print-svc's own additions |
+| `/v0/…` | the 0.14 API, deprecated | frozen until its sunset |
+| `/health`, `/healthz`, `/readyz`, `/version`, `/service-info`, `/docs` | unversioned operational endpoints | — |
+
+`GET /health` is open and answers only whether this deployment can build:
+`{ok, problems, warnings, engines_available}`, **503** when not. Versions and fonts
+are read-scoped at `/svc/v1/toolchain` and `/svc/v1/fonts`; capacity is `/v1/limits`.
+
 Two fronts onto the same runs. A 0.14 job id is a native run id.
 
 **Native** (abc-dispatch): `POST /v1/uploads`, then `POST /v1/{thesis|manuscript|equivalence}/runs`;
@@ -138,9 +151,10 @@ clients use the native API: see [migrating to v1](docs/api-integration.md#migrat
 | POST | `/v0/jobs/{id}/deliver` | Deliver to `downloads` or `minio`. |
 | GET | `/v0/profiles` | Profiles, engines, and the refused `quarto_metadata` keys. |
 | GET | `/v0/delivery/destinations` | What this deployment can deliver to. |
-| GET | `/health` | Can this deployment build? **503** when not. |
-| GET | `/v0/toolchain` · `/v0/fonts` | What rendered this; what will actually render. |
-| POST | `/v0/equivalence` | Are two builds the same document? |
+| GET | `/v0/toolchain` · `/v0/fonts` | Same as `/svc/v1/toolchain` · `/svc/v1/fonts`. |
+
+`POST /v0/equivalence` (and its bare alias) was **removed in 0.16.0**: it held the
+request open for the whole comparison. Compare with an equivalence run instead.
 
 ## What slice 1 established
 
@@ -174,7 +188,7 @@ with volatile fields excluded **by name**, so a *new* source of drift still fail
 `quarto typst --version` reports **0.13.0** while `typst --version` on PATH reports
 **0.13.1**, and the PDF's `/Creator` records 0.13.0. **Pagination is decided by the
 bundled one.** Pinning a standalone typst pins a binary nothing reads, so the image
-ships none and `/v0/toolchain` reports `typst_mismatch` when one shadows the bundled
+ships none and `/svc/v1/toolchain` reports `typst_mismatch` when one shadows the bundled
 version.
 
 ### Fonts
@@ -208,7 +222,7 @@ correct, all checks passing, but a **6-page difference**. Since the faculty leng
 rule is measured in **pages**, a substitution is a compliance event, not a
 cosmetic one. `on_substitution` defaults to `fail`, and a
 substitution is always declared. Whether a given substitution preserves pagination
-is a *measurable* question — render both ways and compare with `/v0/equivalence`.
+is a *measurable* question — render both ways and compare with an equivalence run (`POST /v1/equivalence/runs`).
 
 **Open — needs SU IT:** whether the site licence covers a server rendering for many
 users. If not, the libre set is the fallback and the length rule must be checked

@@ -92,5 +92,5 @@ page count.
 **A fresh render will not match an archived PDF byte for byte**, and usually not on
 the page either: `draft-date: true` stamps the build date on the title page, which
 is rendered content and shifts the layout around it. That is a per-build value, not
-drift. Use `POST /v0/equivalence` rather than a checksum, and expect the date line to
+drift. Use an equivalence run (`POST /v1/equivalence/runs`) rather than a checksum, and expect the date line to
 differ.
