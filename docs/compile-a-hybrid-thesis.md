@@ -43,7 +43,7 @@ a `pypdf` too old to merge (internal links would silently dangle), and fonts tha
 are not installed.
 
 ```bash
-curl -s http://localhost:8080/fonts | jq '.resolutions[] | {requested, resolved, metric_compatible}'
+curl -s http://localhost:8080/v0/fonts | jq '.resolutions[] | {requested, resolved, metric_compatible}'
 ```
 
 If `resolved` differs from `requested` you are getting a **substitution**. The
@@ -101,7 +101,7 @@ Read `identity` in the job manifest to see what the build actually used:
 ## 2. Submit the build
 
 ```bash
-curl -s -X POST http://localhost:8080/compile \
+curl -s -X POST http://localhost:8080/v0/compile \
   -F "sources=@writeup/thesis/01-introduction.md" \
   -F "sources=@writeup/thesis/02-magma.md" \
   -F "sources=@writeup/thesis/03-mtbseq-nf.md" \
@@ -152,14 +152,14 @@ splice — so it returns a job rather than blocking.
 
 ```bash
 JOB=6f1c…
-until [ "$(curl -s localhost:8080/jobs/$JOB | jq -r .state)" != "running" ]; do sleep 5; done
-curl -s localhost:8080/jobs/$JOB | jq '{state, duration_s, checks, artifacts}'
+until [ "$(curl -s localhost:8080/v0/jobs/$JOB | jq -r .state)" != "running" ]; do sleep 5; done
+curl -s localhost:8080/v0/jobs/$JOB | jq '{state, duration_s, checks, artifacts}'
 ```
 
 ## 4. Read the check report before the PDF
 
 ```bash
-curl -s localhost:8080/jobs/$JOB | jq '.checks | {passed, failed, warnings, failures}'
+curl -s localhost:8080/v0/jobs/$JOB | jq '.checks | {passed, failed, warnings, failures}'
 ```
 
 `failed: 0` with a non-zero `passed` is `all_clear`. These catch the defects that
@@ -172,19 +172,19 @@ separated from their table.
 Download directly:
 
 ```bash
-curl -s -o thesis.pdf localhost:8080/jobs/$JOB/artifacts/thesis-assembled.pdf
+curl -s -o thesis.pdf localhost:8080/v0/jobs/$JOB/artifacts/thesis-assembled.pdf
 ```
 
 Or have the service deliver it. Check what this deployment supports first:
 
 ```bash
-curl -s localhost:8080/delivery/destinations | jq
+curl -s localhost:8080/v0/delivery/destinations | jq
 ```
 
 **To your Downloads folder** (the operator must have mounted one):
 
 ```bash
-curl -s -X POST localhost:8080/jobs/$JOB/deliver \
+curl -s -X POST localhost:8080/v0/jobs/$JOB/deliver \
   -F "artifact=thesis-assembled.pdf" -F "destination=downloads" \
   -F "filename=thesis-examination.pdf" | jq
 ```
@@ -192,7 +192,7 @@ curl -s -X POST localhost:8080/jobs/$JOB/deliver \
 **To your object-store prefix:**
 
 ```bash
-curl -s -X POST localhost:8080/jobs/$JOB/deliver \
+curl -s -X POST localhost:8080/v0/jobs/$JOB/deliver \
   -F "artifact=thesis-assembled.pdf" -F "destination=minio" \
   -F "bucket=su-yourgroup" -F "key=users/you/thesis-examination.pdf" | jq
 ```
@@ -217,7 +217,7 @@ length on a substituted build.
 Check which you got:
 
 ```bash
-curl -s localhost:8080/jobs/$JOB | jq '.manifest.fonts.substituted'
+curl -s localhost:8080/v0/jobs/$JOB | jq '.manifest.fonts.substituted'
 ```
 
 An empty list means the licensed fonts were mounted and resolved.
@@ -258,7 +258,7 @@ bytes differ at identical length while the document is unchanged. Compare
 properly instead:
 
 ```bash
-curl -s -X POST "localhost:8080/equivalence?sample=8" \
+curl -s -X POST "localhost:8080/v0/equivalence?sample=8" \
   -F "a=@build-1.pdf" -F "b=@build-2.pdf" | jq '{equivalent, pages, text_equal, pixel_mismatches}'
 ```
 

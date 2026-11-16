@@ -16,7 +16,7 @@ exercised without anything private:
 Build it:
 
     (cd examples/garden-thesis-demo && zip -qr ../garden-thesis-demo.zip .)
-    curl -s -X POST localhost:8080/compile/archive \
+    curl -s -X POST localhost:8080/v0/compile/archive \
       -F bundle=@examples/garden-thesis-demo.zip \
       -F profile=su-fmhs -F copy=examination
 

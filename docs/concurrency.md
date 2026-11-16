@@ -86,7 +86,7 @@ have collided in one.
 A finished job's workspace is reclaimed `ABCPRINT_ARTIFACT_TTL_S` after it
 finishes (6 hours by default), and immediately when the job is evicted past the
 200-job store limit. Download what you need inside the window, or use
-`POST /jobs/{id}/deliver`.
+`POST /v0/jobs/{id}/deliver`.
 
 The **job** survives: an old id still returns its state, its check report and its
 manifest. It is the files that go, and the artefact endpoint then answers `410`
@@ -114,7 +114,7 @@ one token submits repeatedly
   that token owns 10 of 10 slots: {"queued": 8, "running": 2}
 
 a second token, having submitted nothing at all
-  POST /compile/archive -> 429
+  POST /v0/compile/archive -> 429
 ```
 
 A client that submits in a loop — a plugin with a retry, a script over a

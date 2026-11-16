@@ -4,7 +4,7 @@ Every endpoint except `/health` and the documentation pages requires a bearer
 token:
 
 ```bash
-curl -s -H "Authorization: Bearer abcp_…" $SVC/profiles
+curl -s -H "Authorization: Bearer abcp_…" $SVC/v0/profiles
 ```
 
 ## Why this exists, and what it had to fix
@@ -78,9 +78,9 @@ curl -s $SVC/health | jq .auth      # {"mode": "token", "tokens": 2}
 
 | scope | what it opens |
 |---|---|
-| `compile` | `POST /compile`, `/compile/archive`, `/compile/manuscript` |
-| `read` | `GET /jobs`, `/jobs/{id}`, artefacts, `/profiles`, `/toolchain`, `/fonts`, `POST /equivalence` |
-| `deliver` | `POST /jobs/{id}/deliver`, `GET /delivery/destinations` |
+| `compile` | `POST /v0/compile`, `/v0/compile/archive`, `/v0/compile/manuscript` |
+| `read` | `GET /v0/jobs`, `/v0/jobs/{id}`, artefacts, `/v0/profiles`, `/v0/toolchain`, `/v0/fonts`, `POST /v0/equivalence` |
+| `deliver` | `POST /v0/jobs/{id}/deliver`, `GET /v0/delivery/destinations` |
 
 A token without a scope gets **403** naming the missing one; an absent or
 unrecognised token gets **401**. The distinction is the difference between "ask

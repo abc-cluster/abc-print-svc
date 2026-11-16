@@ -27,7 +27,7 @@ bundle that reaches outside itself is not portable.
 ## Compile
 
 ```bash
-curl -s -X POST http://localhost:8080/compile/manuscript \
+curl -s -X POST http://localhost:8080/v0/compile/manuscript \
   -F "sources=@index.qmd" \
   -F "sources=@_metadata.yml" \
   -F "bibliography=@references.bib" \
@@ -40,15 +40,15 @@ Returns **202** with a job id. Poll it:
 
 ```bash
 JOB=…
-until [ "$(curl -s localhost:8080/jobs/$JOB | jq -r .state)" != "running" ]; do sleep 3; done
-curl -s localhost:8080/jobs/$JOB | jq '{state, compliant, duration_s, artifacts}'
+until [ "$(curl -s localhost:8080/v0/jobs/$JOB | jq -r .state)" != "running" ]; do sleep 3; done
+curl -s localhost:8080/v0/jobs/$JOB | jq '{state, compliant, duration_s, artifacts}'
 ```
 
 A manuscript takes roughly 8 s for PDF + DOCX.
 
 ```bash
-curl -s -o manuscript.pdf  localhost:8080/jobs/$JOB/artifacts/index.pdf
-curl -s -o manuscript.docx localhost:8080/jobs/$JOB/artifacts/index.docx
+curl -s -o manuscript.pdf  localhost:8080/v0/jobs/$JOB/artifacts/index.pdf
+curl -s -o manuscript.docx localhost:8080/v0/jobs/$JOB/artifacts/index.docx
 ```
 
 ## `compliant: null` is correct here
@@ -72,14 +72,14 @@ floatsintext: false
 ```
 
 Around twenty keys are refused by name because they run code or read a
-client-chosen path; `GET /profiles` returns the current list with reasons. Refusal
+client-chosen path; `GET /v0/profiles` returns the current list with reasons. Refusal
 is a 400 at submit time, not a failure after a build.
 
 The job manifest returns `effective_quarto_metadata`, so what was merged is never a
 guess:
 
 ```bash
-curl -s localhost:8080/jobs/$JOB | jq '.manifest.effective_quarto_metadata | {mainfont, monofont, papersize, format}'
+curl -s localhost:8080/v0/jobs/$JOB | jq '.manifest.effective_quarto_metadata | {mainfont, monofont, papersize, format}'
 ```
 
 ## Two things that will surprise you
@@ -92,5 +92,5 @@ page count.
 **A fresh render will not match an archived PDF byte for byte**, and usually not on
 the page either: `draft-date: true` stamps the build date on the title page, which
 is rendered content and shifts the layout around it. That is a per-build value, not
-drift. Use `POST /equivalence` rather than a checksum, and expect the date line to
+drift. Use `POST /v0/equivalence` rather than a checksum, and expect the date line to
 differ.

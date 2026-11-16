@@ -2,7 +2,7 @@
 # Deploy abc-print-svc on Nomad: the workers' namespace and job, the front door's
 # dispatch policy, then the front door. Idempotent; rerun to roll a new version.
 #
-#   NOMAD_ADDR=… NOMAD_TOKEN=<management> nomad/deploy.sh 0.15.0
+#   NOMAD_ADDR=… NOMAD_TOKEN=<management> nomad/deploy.sh 0.15.1
 #
 # A management token is needed once per deploy, by the operator, to register the
 # jobs and the policy. The running service holds no token: the front door
