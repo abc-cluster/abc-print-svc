@@ -62,7 +62,7 @@ from . import (archive, auth, bundle_rules, capabilities, compile as compiler, d
                identity, profile as profiles, workspace)
 from .runner import TimedOut
 
-__version__ = "0.17.0"
+__version__ = "0.18.0"
 
 GRACE_S = float(os.environ.get("ABCPRINT_GRACE_S", "30"))
 KINDS = ("thesis", "manuscript", "equivalence")
@@ -278,6 +278,9 @@ def _engine_ready(engine: str) -> None:
 def _profile_for(ref: str, engine: str, other_kind: str):
     try:
         prof = profiles.load(ref)
+    except profiles.ProfileUntrusted as exc:
+        # The operator's problem, not the caller's: the request may be fine.
+        raise ApiError(503, "profile_untrusted", str(exc)) from None
     except profiles.ProfileError as exc:
         raise _invalid(str(exc))
     if prof.engine != engine:

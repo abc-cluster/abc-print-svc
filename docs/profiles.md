@@ -37,6 +37,9 @@ refused. Per-build settings go in `quarto_metadata`, which has its own refused k
 - `"profile": "su-fmhs"` gets the profile's **default** version. The default moves
   only when the operator promotes a version, never just because one was published.
 - `"profile": "su-fmhs@0.3"` gets exactly that version.
+- A pin recorded before a profile was published still works. `su-fmhs@git-d0e8657`
+  (what 0.17.0 runs recorded) and `su-fmhs@unversioned` resolve to `su-fmhs@1.0.0`,
+  which was built from that same revision. The run records the real version.
 
 The front door resolves the name **once, when it admits the run**, so a promote
 between admission and the build does not change what you get. The run then records
@@ -58,8 +61,15 @@ were built against the same rulebook. To rebuild an old document, request its
 
 A bundle is a directory in the same layout as a baked profile. It has
 `profile.yaml`, the template files beside it (for example `_extensions/` and a
-CSL), and optionally `examples/*.zip`. `examples/` and `fonts/` are never copied
-into a build.
+CSL), and optionally:
+
+- `examples/*.zip` — checked against the profile's own rules at publish, and shown
+  to clients by `/shape`;
+- `fonts/` — font files and their licence, put on the render's font path;
+- `pipeline/` — for a `thesis-assemble` profile, **required**: the scripts that
+  assemble and verify the thesis. Since 0.18.0 the worker image has none of its own.
+
+None of these is copied beside the document.
 
 ```yaml
 schema_version: 2
@@ -78,7 +88,79 @@ bundle:
   tree:                          # optional: what /shape shows a client
     - {path: src/index.qmd, role: entry document}
     - {path: assets/figures/current/figure-1.svg, role: figure}
+aliases: []                      # other names a pin may use (e.g. git-<rev>)
+fonts_license: OFL-1.1           # required when fonts/ is present (SPDX id)
 ```
+
+### su-fmhs: built from the thesis repository
+
+The SU/FMHS profile and its pipeline come from the (private) thesis repository.
+`bundles/su-fmhs/build.sh` turns one committed revision into a bundle:
+
+```bash
+bundles/su-fmhs/build.sh ~/projects/PHD-dissertation <rev> <version> /tmp/su-fmhs-<version> [alias …]
+```
+
+It uses `git archive`, not the working tree, so the same revision always gives the
+same digest. It drops build artefacts, adds the libre font fallbacks, and runs the
+sanitiser, which **fails the build** if any personal string survives. `1.0.0` is
+revision `d0e8657` — the content 0.17.0 had baked in — with the aliases
+`git-d0e8657` and `unversioned`.
+
+### Fonts in a bundle
+
+`fonts/` may hold only `.ttf`/`.otf`/`.ttc`/`.otc` files and their licence text
+(`OFL.txt`, `LICENSE`). `profile.yaml` must name the licence (`fonts_license`, an
+SPDX id). Publishing reads each file's family from its `name` table and records
+`fonts_shipped: [{file, families, sha256}]`; `requires.fonts` is satisfied by the
+bundle's own families as well as the worker's.
+
+A build puts them first on the font path (`TYPST_FONT_PATHS`, and `$HOME/.local/
+share/fonts` for fontconfig), ahead of the image's licensed and OFL fonts.
+
+The store is readable by whoever can read the volume or bucket. A bundle that
+ships one of the proprietary families the SU template names (Calibri, Cambria, …)
+under an open-licence id is refused. Whether a licence covers server-side
+rendering for many users is the operator's call, and is not something the
+service can check.
+
+### Signatures
+
+A digest proves a bundle is the one the index names. It does not prove the
+operator published it: anyone who can write the store can write the index too. So
+a version can carry an Ed25519 signature over
+
+```
+abc-print-profile-v1 <name>@<version> <digest>
+```
+
+The key stays on the operator's machine:
+
+```bash
+openssl genpkey -algorithm ed25519 -out ~/.abc/print-svc-profile-signing.pem    # once
+openssl pkey -in ~/.abc/print-svc-profile-signing.pem -pubout -outform DER | tail -c 32 | base64
+```
+
+The second command prints the public key; deploy with it
+(`PROFILE_TRUSTED_KEYS=<it> nomad/deploy.sh <v>`). Then:
+
+```bash
+ABCPRINT_SIGNING_KEY=~/.abc/print-svc-profile-signing.pem NOMAD_CMD=… \
+  nomad/publish-profile.sh ./my-profile [--promote]          # signed at publish
+ABCPRINT_SIGNING_KEY=… NOMAD_CMD=… nomad/publish-profile.sh --sign-only canary-quarto@1
+```
+
+The front door computes the statement, `openssl` signs it locally, and only the
+signature travels. `--sign-only` signs a version that is already published.
+
+The policy is `ABCPRINT_PROFILE_SIGNATURES=off|warn|require`. It defaults to
+`require` whenever trusted keys are set:
+- the front door refuses to publish an unsigned version;
+- it refuses to admit a run on one (`503 profile_untrusted`, the operator's
+  problem, not the caller's);
+- the worker checks the signature again before building.
+
+Baked profiles are trusted through the image digest instead.
 
 ### Publish, promote, list
 
@@ -143,9 +225,7 @@ The read-only key goes in the Nomad variable `nomad/jobs/<job name>`, as
 
 ### Not yet
 
-- **Fonts shipped in a bundle** (`fonts/`) are accepted by `publish` but not yet
-  added to the render's font path. A profile that needs a font missing from the
-  image is refused at publish.
-- **The thesis-assemble pipeline scripts are engine code** and stay in the image.
-  Only a thesis profile's template and rules are publishable.
-- **Signatures.** Bundles are pinned by content digest, not signed.
+- **Who may sign.** One trusted-key list for the whole service. A per-profile
+  signer (for example, Jorge for templates he owns) is not modelled.
+- **Key rotation** is "add the new public key, re-sign, remove the old one". There
+  is no revocation list beyond removing a key.

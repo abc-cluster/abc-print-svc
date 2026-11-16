@@ -42,9 +42,17 @@ def _font_paths() -> list[str] | None:
 
 
 def engines_available() -> dict:
-    pipeline = os.environ.get("ABCPRINT_PIPELINE", "/srv/pipeline")
+    """Whether this image can RUN each engine.
+
+    Since 0.18.0 the thesis pipeline (its scripts) travels in the profile bundle,
+    so the engine needs only what interprets it: bash, qpdf and poppler, on top
+    of quarto. Whether a given profile carries a pipeline is checked when it is
+    published, and again when a build lays it out.
+    """
+    import shutil as _sh
+    tools = ("bash", "qpdf", "pdftotext", "pdfinfo")
     return {"quarto-render": True,
-            "thesis-assemble": os.path.isfile(os.path.join(pipeline, "thesis-assemble.sh"))}
+            "thesis-assemble": all(_sh.which(t) for t in tools)}
 
 
 def measure() -> dict:

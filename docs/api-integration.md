@@ -53,7 +53,7 @@ Browser clients can read these (they are in the CORS `expose_headers`).
 | a browser link to an artefact | `POST …/runs/{id}/tickets` `{"name": "<output>"}` → a one-use, 60-second `href` that needs no header |
 | `GET /v0/profiles` | `GET /v1/{kind}/options` — profiles for that kind, and the refused `quarto_metadata` keys |
 | `GET /v0/toolchain`, `/v0/fonts` | `GET /svc/v1/toolchain`, `/svc/v1/fonts` — the same bodies |
-| `POST /v0/equivalence` (**removed in 0.16.0**) | uploads, then `POST /v1/equivalence/runs` `{"a": "upl_…", "b": "upl_…"}`; poll; the report is the run's `outcome` |
+| `POST /v0/equivalence` (**removed in 0.16.0**) | `POST /v1/equivalence/runs` with each side an upload (`"upl_…"`) or one of your run's outputs (`{"run": "run_…", "output": "….pdf"}`); poll; the report is the run's `outcome` |
 | `POST /v0/jobs/{id}/deliver` | no v1 equivalent — download the output instead |
 | — | `POST …/runs/{id}/cancel`, `DELETE …/runs/{id}`, `GET …/runs/{id}/log`, `GET /v1/limits` |
 
@@ -132,7 +132,7 @@ A token carries some subset of three:
 | scope | endpoints |
 |---|---|
 | `read` | `/svc/v1/toolchain` `/svc/v1/fonts` `/v0/profiles` `/v0/toolchain` `/v0/fonts` `/v0/jobs` `/v0/jobs/{id}` artefacts, every `GET /v1/…` |
-| `compile` | `/v0/compile` `/v0/compile/archive` `/v0/compile/manuscript` |
+| `compile` | `/v0/compile` `/v0/compile/archive` `/v0/compile/manuscript`, every `POST`/`DELETE` under `/v1/…` except tickets — including `POST /v1/equivalence/runs` (since 0.18.0) |
 | `deliver` | `/v0/jobs/{id}/deliver` `/v0/delivery/destinations` |
 
 A plugin that submits and downloads wants `compile,read` and should not hold
@@ -303,8 +303,18 @@ resource dictionaries in per-process order and stamps a random instance id.
 `SOURCE_DATE_EPOCH` is pinned by the service, which removes the timestamps but not
 the ordering. A checksum comparison will therefore report a false difference.
 
-Use an equivalence run instead (`POST /v1/equivalence/runs` with two uploads; the
-report is the run's `outcome`). It compares on four planes — page count, extracted
+Use an equivalence run instead (`POST /v1/equivalence/runs`; the report is the
+run's `outcome`). Each side is an upload, or — the usual case, "did the rebuild
+change the document?" — an output of one of your own runs, compared where it is:
+
+```json
+{"a": {"run": "run_01J…", "output": "thesis-assembled.pdf"},
+ "b": {"run": "run_01K…", "output": "thesis-assembled.pdf"}}
+```
+
+Another caller's run reads as unknown (`422`, as any resource not yours), and only
+a PDF output can be named. Creating a comparison needs the `compile` scope: it
+stores files and takes a worker slot. Reading the verdict back needs `read`. It compares on four planes — page count, extracted
 text with layout, rendered pixels, and metadata with volatile fields excluded **by
 name** so new drift still fails.
 

@@ -25,6 +25,20 @@ the extracted content hashes to the digest the index recorded. Every run records
 The digest is of the CONTENT (paths, the executable bit, file bytes), not of the
 archive, so the same directory always has the same digest however it was packed
 — and a baked profile in an older image gets a comparable digest too.
+
+**Signatures** (0.18.0). The digest proves a bundle is the one the index names;
+it does not prove the operator published it — anyone who can write the store
+can write the index too. A version may carry an Ed25519 signature over
+`statement(name, version, digest)`, made with the operator's key on the
+operator's machine (`openssl pkeyutl -sign -rawin`; the private key never
+reaches the cluster). Trusted public keys are configuration
+(ABCPRINT_PROFILE_TRUSTED_KEYS), and ABCPRINT_PROFILE_SIGNATURES=require makes
+the front door refuse to admit, and the worker refuse to build, any version
+whose signature is missing or does not verify.
+
+**Aliases.** A version may answer to other names (`aliases:` in profile.yaml),
+so a pin recorded before the profile was published — `su-fmhs@git-d0e8657`, or
+`@unversioned` — still resolves, to the version built from that same revision.
 """
 from __future__ import annotations
 
@@ -50,10 +64,16 @@ INDEX_SCHEMA = 1
 DIGEST_EXCLUDE = frozenset({"PROVENANCE.json"})
 MAX_BUNDLE_BYTES = 256 * 1024 * 1024
 MAX_BUNDLE_FILES = 20000
+KEYS_VAR = "ABCPRINT_PROFILE_TRUSTED_KEYS"
+SIG_POLICY_VAR = "ABCPRINT_PROFILE_SIGNATURES"
 
 
 class StoreError(RuntimeError):
     """The store is unreachable, corrupt, or a bundle failed verification."""
+
+
+class SignatureError(StoreError):
+    """A version's signature is missing or wrong, and the policy requires one."""
 
 
 # ── content digest ───────────────────────────────────────────────────────────
@@ -147,6 +167,84 @@ def _safe_unpack(data: bytes, dest: str) -> None:
             os.chmod(out, 0o755 if m.mode & 0o111 else 0o644)
 
 
+# ── signatures ───────────────────────────────────────────────────────────────
+
+def statement(name: str, version: str, digest: str) -> bytes:
+    """The exact bytes a signature covers. Changing this breaks every signature."""
+    return f"abc-print-profile-v1 {name}@{version} {digest}\n".encode()
+
+
+def key_id(raw_public_key: bytes) -> str:
+    return hashlib.sha256(raw_public_key).hexdigest()[:16]
+
+
+def trusted_keys(spec: str | None = None) -> dict[str, bytes]:
+    """`{key_id: raw 32-byte Ed25519 public key}` from ABCPRINT_PROFILE_TRUSTED_KEYS.
+
+    The variable holds base64 raw public keys separated by commas or whitespace
+    (`openssl pkey -in key.pem -pubout -outform DER | tail -c 32 | base64`).
+    """
+    import base64
+    import binascii
+    spec = os.environ.get(KEYS_VAR, "") if spec is None else spec
+    out = {}
+    for tok in spec.replace(",", " ").split():
+        try:
+            raw = base64.b64decode(tok, validate=True)
+        except (binascii.Error, ValueError):
+            raise StoreError(f"{KEYS_VAR}: {tok[:12]}… is not base64") from None
+        if len(raw) != 32:
+            raise StoreError(f"{KEYS_VAR}: {tok[:12]}… is not a 32-byte Ed25519 public key")
+        out[key_id(raw)] = raw
+    return out
+
+
+def signature_policy() -> str:
+    """off | warn | require. Unset: require when trusted keys are configured."""
+    pol = os.environ.get(SIG_POLICY_VAR, "").strip().lower()
+    if not pol:
+        return "require" if os.environ.get(KEYS_VAR, "").strip() else "off"
+    if pol not in ("off", "warn", "require"):
+        raise StoreError(f"{SIG_POLICY_VAR} must be off, warn or require; got {pol!r}")
+    return pol
+
+
+def check_signature(name: str, version: str, rec: dict,
+                    keys: dict[str, bytes] | None = None) -> str:
+    """'valid', 'unsigned', 'untrusted-key' or 'invalid' — never raises for a bad signature."""
+    import base64
+    sig = rec.get("signature") or {}
+    if not sig:
+        return "unsigned"
+    keys = trusted_keys() if keys is None else keys
+    pub = keys.get(sig.get("key_id", ""))
+    if pub is None:
+        return "untrusted-key"
+    try:
+        from cryptography.exceptions import InvalidSignature
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    except ImportError:                       # pragma: no cover - the images carry it
+        raise StoreError("signature checking needs the `cryptography` package") from None
+    try:
+        Ed25519PublicKey.from_public_bytes(pub).verify(
+            base64.b64decode(sig.get("sig", "")), statement(name, version, rec["digest"]))
+        return "valid"
+    except (InvalidSignature, ValueError):
+        return "invalid"
+
+
+def enforce_signature(name: str, version: str, rec: dict) -> str:
+    """Apply the policy to one version. Returns the verdict; raises under `require`."""
+    pol = signature_policy()
+    if pol == "off":
+        return "unchecked"
+    verdict = check_signature(name, version, rec)
+    if verdict != "valid" and pol == "require":
+        raise SignatureError(f"{name}@{version}: signature {verdict}; refusing it "
+                         f"({SIG_POLICY_VAR}=require)")
+    return verdict
+
+
 # ── sources ──────────────────────────────────────────────────────────────────
 
 class _FileSource:
@@ -232,6 +330,7 @@ class Resolved:
     key: str
     entry: dict           # the index entry for this version (descriptor, bundle rules, …)
     source: str
+    signature: str = "unchecked"   # valid | unsigned | untrusted-key | invalid | unchecked
 
 
 class Store:
@@ -272,12 +371,19 @@ class Store:
             return None
         version = want or entry.get("default")
         v = entry["versions"].get(version) if version else None
+        if v is None and want:
+            # A pin recorded under another name for the same content (aliases:).
+            for real, rec in sorted(entry["versions"].items()):
+                if want in ((rec.get("descriptor") or {}).get("aliases") or []):
+                    version, v = real, rec
+                    break
         if v is None and want and not fresh:
             # Published moments ago? Look once more before giving up.
             return self.resolve(ref, fresh=True)
         if v is None:
             return None
-        return Resolved(name, version, v["digest"], v["key"], v, self.src.url)
+        verdict = enforce_signature(name, version, v)
+        return Resolved(name, version, v["digest"], v["key"], v, self.src.url, verdict)
 
     def materialize(self, r: Resolved) -> str:
         """The bundle's directory in the local cache, fetched and verified once."""
@@ -307,9 +413,25 @@ class Store:
 
     # ── publishing (operator only; see abcprint.publish) ───────────────────────
 
-    def publish(self, root: str, descriptor: dict, *, promote: bool) -> Resolved:
+    def publish(self, root: str, descriptor: dict, *, promote: bool,
+                signature: dict | None = None) -> Resolved:
         name, version = descriptor["name"], descriptor["version"]
         digest = dir_digest(root)
+        if signature is not None:
+            verdict = check_signature(name, version, {"digest": digest, "signature": signature})
+            if verdict != "valid":
+                raise StoreError(f"{name}@{version}: the signature given is {verdict} for "
+                                 f"{digest}; nothing published")
+        elif signature_policy() == "require":
+            raise StoreError(f"{name}@{version}: unsigned, and {SIG_POLICY_VAR}=require; "
+                             f"nothing published")
+        idx_now = self.index(fresh=True)["profiles"].get(name) or {}
+        for real, rec in (idx_now.get("versions") or {}).items():
+            clash = set(descriptor.get("aliases") or []) & (
+                {real} | set((rec.get("descriptor") or {}).get("aliases") or []))
+            if real != version and clash:
+                raise StoreError(f"{name}@{version}: alias {sorted(clash)} already names "
+                                 f"{name}@{real}")
         hexd = digest.split(":", 1)[1]
         key = f"bundles/{name}/{version}/{hexd}.tar.gz"
         idx = self.index(fresh=True)
@@ -320,8 +442,14 @@ class Store:
                 raise StoreError(
                     f"{name}@{version} is already published with {have['digest']}; a version "
                     f"never changes — publish this content as a new version")
+            changed = False
+            if signature is not None and have.get("signature") != signature:
+                have["signature"] = signature        # verified above, over this same digest
+                changed = True
             if promote and entry.get("default") != version:
                 entry["default"] = version
+                changed = True
+            if changed:
                 self._write_index(idx)
             return Resolved(name, version, digest, have["key"], have, self.src.url)
         self.src.put(key, pack(root))
@@ -337,6 +465,8 @@ class Store:
                "published_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                "engine": descriptor["engine"], "schema_version": descriptor.get("schema_version", 1),
                "descriptor": descriptor}
+        if signature is not None:
+            rec["signature"] = signature
         entry["versions"][version] = rec
         if promote or not entry.get("default"):
             entry["default"] = version
@@ -357,9 +487,13 @@ class Store:
             entry = idx["profiles"].setdefault(r.name, {"default": None, "versions": {}})
             have = entry["versions"].get(r.version)
             if have is not None and have["digest"] == r.digest and mirror.src.get(r.key) is not None:
-                if entry.get("default") is not None and have.get("source"):
+                fresh_sig = r.entry.get("signature")
+                if (entry.get("default") is not None and have.get("source")
+                        and have.get("signature") == fresh_sig):
                     return
                 have.setdefault("source", r.entry.get("source") or self.src.url)
+                if fresh_sig:
+                    have["signature"] = fresh_sig      # signed after it was first mirrored
                 entry["default"] = entry.get("default") or r.version
             else:
                 data = self.src.get(r.key)
@@ -375,6 +509,19 @@ class Store:
             idx["schema"] = INDEX_SCHEMA
             mirror.src.put(INDEX, json.dumps(idx, indent=1, sort_keys=True).encode())
             mirror._index = None
+
+    def sign(self, name: str, version: str, signature: dict) -> None:
+        """Attach a signature to a version already published (it covers the digest,
+        which never changes, so signing later is as good as signing at publish)."""
+        idx = self.index(fresh=True)
+        rec = ((idx["profiles"].get(name) or {}).get("versions") or {}).get(version)
+        if rec is None:
+            raise StoreError(f"{name}@{version} is not published")
+        verdict = check_signature(name, version, {**rec, "signature": signature})
+        if verdict != "valid":
+            raise StoreError(f"{name}@{version}: the signature given is {verdict}; not attached")
+        rec["signature"] = signature
+        self._write_index(idx)
 
     def promote(self, name: str, version: str) -> None:
         idx = self.index(fresh=True)

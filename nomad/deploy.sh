@@ -26,8 +26,12 @@ tokens="$(grep -vE '^[[:space:]]*(#|$)' "$HERE/tokens.hashes" | paste -sd'|' -)"
 "${NOMAD[@]}" namespace apply \
   -description "abc-print-svc workers: dispatched by the print front door only; no member policy grants anything here" \
   svc-print
+# Signed profiles (0.18.0): PROFILE_TRUSTED_KEYS=<base64 raw Ed25519 public key>[,…].
+# Both jobs get it; set, it makes signatures mandatory.
+key_vars=()
+[ -n "${PROFILE_TRUSTED_KEYS:-}" ] && key_vars+=(-var "profile_trusted_keys=$PROFILE_TRUSTED_KEYS")
 "${NOMAD[@]}" job run -detach -var "image=ghcr.io/abc-cluster/abc-print-worker:$V" \
-  "$HERE/abc-print-run.nomad.hcl"
+  ${key_vars[@]+"${key_vars[@]}"} "$HERE/abc-print-run.nomad.hcl"
 # Before the front door, so its first allocation can dispatch.
 "${NOMAD[@]}" acl policy apply -namespace abc-apps -job "$NAME" \
   -description "abc-print-svc front door: dispatch abc-print-run" \
@@ -40,4 +44,5 @@ profile_vars=()
 [ "${PROFILE_S3_CREDENTIALS:-}" = true ] && profile_vars+=(-var "profile_s3_credentials=true")
 "${NOMAD[@]}" job run -var "image=ghcr.io/abc-cluster/abc-print-svc:$V" \
   -var "name=$NAME" -var "host=$HOST" -var "tokens=$tokens" ${profile_vars[@]+"${profile_vars[@]}"} \
+  ${key_vars[@]+"${key_vars[@]}"} \
   "$HERE/abc-print-svc.nomad.hcl"

@@ -19,6 +19,12 @@ variable "image" {
   description = "The worker image, built with --target worker. Same version as the front door."
 }
 
+variable "profile_trusted_keys" {
+  type        = string
+  default     = ""
+  description = "Base64 raw Ed25519 public keys (comma-separated) whose signatures on published profiles are trusted. Set = signatures required."
+}
+
 variable "datacenters" {
   type    = list(string)
   default = ["*"]
@@ -77,7 +83,8 @@ job "abc-print-run" {
         command = "python3"
         args    = ["-m", "abc_dispatch.worker", "--kind", "abcprint.service:make_kind"]
         # A document is arbitrary input and the render needs nothing from the
-        # network: the profile, fonts and extensions are in the image.
+        # network: the toolchain is in the image, and the profile (with its
+        # pipeline and fonts) is on the shared volume, staged by the front door.
         network_mode = "none"
       }
 
@@ -96,6 +103,9 @@ job "abc-print-run" {
         # against its digest before a build uses it. Empty mirror = baked profiles.
         ABCPRINT_PROFILE_SOURCE    = "file:///srv/dispatch/abc-print-svc/profile-mirror"
         ABCPRINT_PROFILE_CACHE     = "/srv/dispatch/abc-print-svc/profile-mirror/.cache"
+        # The worker checks the signature again: the mirror is on a volume other
+        # jobs could in principle write, and the build runs the profile's code.
+        ABCPRINT_PROFILE_TRUSTED_KEYS = var.profile_trusted_keys
       }
 
       # Longer than run_tool's 30 s grace period, or Nomad's kill arrives first.

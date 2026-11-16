@@ -27,8 +27,24 @@ class CompileError(RuntimeError):
     pass
 
 
+def _image_font_paths() -> list[str]:
+    return [p for p in os.environ.get("ABCPRINT_FONT_PATHS", "").split(os.pathsep) if p]
+
+
+def font_paths(paths: dict) -> list[str] | None:
+    """The profile's own fonts first, then the image's (licensed, then OFL)."""
+    return (list(paths.get("font_dirs") or []) + _image_font_paths()) or None
+
+
+def font_env(paths: dict) -> dict:
+    """TYPST_FONT_PATHS for a render: typst reads it, and does not use fontconfig."""
+    fp = font_paths(paths)
+    return {"TYPST_FONT_PATHS": os.pathsep.join(fp)} if fp else {}
+
+
 def _env(paths: dict) -> dict:
     env = dict(os.environ)
+    env.update(font_env(paths))
     env.update({
         "SOURCE_DATE_EPOCH": EPOCH,
         "TZ": "UTC",
@@ -55,7 +71,7 @@ def run_quarto(paths: dict, prof: profiles.Profile, *, formats: list[str],
     fh = fonts.health(
         [ (((prof.fonts or {}).get(r) or {}).get("stack") or [None])[0]
           for r in ("body", "sans", "mono") ],
-        [p for p in os.environ.get("ABCPRINT_FONT_PATHS", "").split(os.pathsep) if p] or None)
+        font_paths(paths))
     return {
         "artifacts": res["artifacts"],
         "compliant": True if prof.has_compliance_rules else None,
@@ -67,7 +83,6 @@ def run_quarto(paths: dict, prof: profiles.Profile, *, formats: list[str],
         if not prof.has_compliance_rules else {},
         "manifest": {
             "toolchain": tc.as_dict(), "typst_mismatch": tc.typst_mismatch,
-            "pipeline": toolchain.pipeline_provenance(),
             "profile": prof.as_dict(),
             "template": prof.template,
             "effective_quarto_metadata": res["effective_metadata"],
@@ -140,7 +155,7 @@ def run(paths: dict, chapters: list[str] | None, copy: str = "examination",
     tc = toolchain.detect()
     fh = fonts.health(
         ["Calibri", "Cambria", "Georgia", "Times New Roman", "Arial", "Helvetica Neue"],
-        [p for p in os.environ.get("ABCPRINT_FONT_PATHS", "").split(os.pathsep) if p] or None)
+        font_paths(paths))
 
     checks = _parse_checks(log)
     return {
@@ -156,7 +171,7 @@ def run(paths: dict, chapters: list[str] | None, copy: str = "examination",
             "toolchain": tc.as_dict(),
             "typst_mismatch": tc.typst_mismatch,
             # Which rulebook verified this document, not just which tools built it.
-            "pipeline": toolchain.pipeline_provenance(),
+            "pipeline": toolchain.pipeline_provenance(paths["bin"]),
             "fonts": {"resolutions": fh["resolutions"], "substituted": fh["substituted"]},
             "source_date_epoch": EPOCH,
             "copy": copy,

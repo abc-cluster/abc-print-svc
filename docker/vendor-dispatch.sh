@@ -9,9 +9,9 @@
 # without that record.
 #
 #   docker/vendor-dispatch.sh            # tag from DISPATCH_TAG below
-#   docker/vendor-dispatch.sh v0.4.0 ~/projects/abc-dispatch
+#   docker/vendor-dispatch.sh v0.5.0 ~/projects/abc-dispatch
 set -euo pipefail
-TAG="${1:-${DISPATCH_TAG:-v0.4.0}}"
+TAG="${1:-${DISPATCH_TAG:-v0.5.0}}"
 SRC="${2:-${ABC_DISPATCH_REPO:-$HOME/projects/abc-dispatch}}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/vendor-wheels"

@@ -44,17 +44,9 @@ fi
 [ -d "$ROOT/src/abcprint" ]  && ok "service source present" || bad "src/abcprint missing"
 if [ -d "$ROOT/profiles-src" ]; then ok "profiles-src present"; else bad "profiles-src missing"; fi
 
-if [ -d "$ROOT/pipeline" ]; then
-  if [ -f "$ROOT/pipeline/thesis-assemble.sh" ]; then
-    ok "thesis pipeline vendored (thesis-assemble engine will be available)"
-  else
-    ok "pipeline/ placeholder present (quarto-render only — this is fine)"
-  fi
-else
-  note "pipeline/ not prepared yet — run ./docker/vendor-pipeline.sh first"
-fi
-[ -d "$ROOT/profiles/biorxiv-dev" ] && ok "biorxiv-dev profile vendored" \
-  || note "profiles/ not prepared yet — run ./docker/vendor-pipeline.sh first"
+[ -f "$ROOT/vendor-wheels/DISPATCH.json" ] && ok "abc-dispatch wheel vendored" \
+  || note "abc-dispatch not vendored yet — run ./docker/vendor-dispatch.sh first"
+note "the thesis pipeline and SU/FMHS profile are a published bundle since 0.18.0 (bundles/su-fmhs/)"
 
 # --- network ----------------------------------------------------------------
 # The build downloads quarto, pandoc, fonts and the doc UIs. A proxy or firewall
@@ -84,7 +76,8 @@ if [ "$fail" -gt 0 ]; then
   exit 1
 fi
 echo "  ready to build:"
-echo "    ./docker/vendor-pipeline.sh"
-echo "    docker build -t abc-print-svc:local -f Containerfile ."
+echo "    ./docker/vendor-dispatch.sh"
+echo "    docker build --target worker -t abc-print-worker:local -f Containerfile ."
+echo "    docker build --target api    -t abc-print-svc:local    -f Containerfile ."
 [ "$warn" -gt 0 ] && echo "  ($warn note(s) above are informational)"
 exit 0

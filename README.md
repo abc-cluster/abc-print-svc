@@ -238,15 +238,15 @@ against a locally rendered copy.
 ## Build
 
 ```bash
-./docker/vendor-pipeline.sh       # the thesis pipeline + SU/FMHS profile (optional)
 ./docker/vendor-dispatch.sh       # abc-dispatch, as a wheel from its pinned tag
 docker build --target worker -t abc-print-worker:local -f Containerfile .
 docker build --target api    -t abc-print-svc:local    -f Containerfile .
 ```
 
-The thesis pipeline lives in a separate private repo and is **optional** — without
-it the worker runs everything except the thesis engine, and `/health` reports
-`engines_available`. abc-dispatch is private too, so it is vendored as a wheel
+Since 0.18.0 the images carry **no private profile and no thesis pipeline**: the
+SU/FMHS profile and the pipeline that verifies it are one published profile
+bundle, built from the thesis repository with `bundles/su-fmhs/build.sh` and
+published with `nomad/publish-profile.sh` (see [docs/profiles.md](docs/profiles.md)). abc-dispatch is private too, so it is vendored as a wheel
 rather than installed from git in the build. Full detail, including the BuildKit stall
 and CORS, is in **[docs/building.md](docs/building.md)**.
 

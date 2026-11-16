@@ -79,7 +79,7 @@ class Toolchain:
         return out
 
 
-def pipeline_provenance() -> dict:
+def pipeline_provenance(pipeline_dir: str | None = None) -> dict:
     """Which revision of the vendored pipeline and profile is in this image.
 
     The pipeline lives in another repository and changes independently. When a
@@ -88,14 +88,17 @@ def pipeline_provenance() -> dict:
     Absent file means an image built without the thesis engine.
     """
     import json
-    path = os.path.join(os.environ.get("ABCPRINT_PIPELINE", "/srv/pipeline"),
+    path = os.path.join(pipeline_dir or os.environ.get("ABCPRINT_PIPELINE", "/srv/pipeline"),
                         "PROVENANCE.json")
     try:
         with open(path) as fh:
             return json.load(fh)
     except (OSError, ValueError):
+        if pipeline_dir:
+            return {"revision": "unknown",
+                    "note": "the profile's pipeline/ carries no PROVENANCE.json"}
         return {"revision": "not-vendored",
-                "note": "this image was built without the thesis pipeline"}
+                "note": "since 0.18.0 the thesis pipeline travels in its profile bundle"}
 
 
 def detect() -> Toolchain:

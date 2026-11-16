@@ -78,7 +78,7 @@ curl -s $SVC/health | jq .warnings  # [] — or a warning when auth is off or ha
 
 | scope | what it opens |
 |---|---|
-| `compile` | `POST /v0/compile`, `/v0/compile/archive`, `/v0/compile/manuscript` |
+| `compile` | `POST /v0/compile`, `/v0/compile/archive`, `/v0/compile/manuscript`; every `POST`/`DELETE` under `/v1/…` except tickets, including `POST /v1/equivalence/runs` (since 0.18.0: `read` never writes) |
 | `read` | `GET /v0/jobs`, `/v0/jobs/{id}`, artefacts, `/v0/profiles`, `/v0/toolchain`, `/v0/fonts`, `/svc/v1/toolchain`, `/svc/v1/fonts`, every `GET /v1/…` |
 | `deliver` | `POST /v0/jobs/{id}/deliver`, `GET /v0/delivery/destinations` |
 
